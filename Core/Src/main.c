@@ -1,5 +1,8 @@
 #include <stdint.h>
 
+#include "lab2_config.h"
+#include "uart.h"
+
 #define PERIPH_BASE        0x40000000UL
 #define APB2PERIPH_BASE    (PERIPH_BASE + 0x00010000UL)
 #define AHBPERIPH_BASE     (PERIPH_BASE + 0x00020000UL)
@@ -38,12 +41,9 @@ static void systick_init(void)
   SYST_CSR = (1UL << 2) | (1UL << 1) | (1UL << 0);
 }
 
-static void delay_ms(uint32_t ms)
+static uint32_t millis(void)
 {
-  const uint32_t start = systick_ms;
-
-  while ((systick_ms - start) < ms) {
-  }
+  return systick_ms;
 }
 
 static void led_init(void)
@@ -71,12 +71,39 @@ int main(void)
 {
   systick_init();
   led_init();
+  uart1_init();
+
+  uart1_write_string("\r\nLab2 USART polling demo started.\r\n");
+
+  uint32_t next_send_ms = 0;
+  uint32_t next_led_ms = 0;
+  uint32_t led_is_on = 0;
 
   while (1) {
-    led_on();
-    delay_ms(500);
+    const uint32_t now = millis();
+    char received;
 
-    led_off();
-    delay_ms(500);
+    if ((int32_t)(now - next_send_ms) >= 0) {
+      uart1_write_string("Name pinyin: " LAB2_NAME_PINYIN "\r\n");
+      next_send_ms = now + 1000U;
+    }
+
+    if (uart1_read_char_nonblocking(&received)) {
+      uart1_write_string("RX: ");
+      uart1_write_char(received);
+      uart1_write_string("\r\n");
+    }
+
+    if ((int32_t)(now - next_led_ms) >= 0) {
+      if (led_is_on) {
+        led_off();
+        led_is_on = 0;
+      } else {
+        led_on();
+        led_is_on = 1;
+      }
+
+      next_led_ms = now + 500U;
+    }
   }
 }

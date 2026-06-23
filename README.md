@@ -3,6 +3,9 @@
 把传统的 **Keil µVision5 实验** 改造成 **Arch Linux 原生嵌入式开发流程**。
 目标功能：板载 LED **亮 500ms → 灭 500ms** 循环（即每 500ms 翻转一次电平）。
 
+当前工程也包含实验二第一步：USART1 串口每 1 秒发送一次姓名拼音，并使用轮询方式
+接收串口数据后回显。详见 [docs/lab2-usart-polling.md](docs/lab2-usart-polling.md)。
+
 | 项目 | 值 |
 | --- | --- |
 | MCU | **STM32F103C8T6**（Cortex-M3, 64KB Flash, 20KB RAM, 封装 LQFP48） |
