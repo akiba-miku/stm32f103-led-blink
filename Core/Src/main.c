@@ -1,6 +1,6 @@
 #include <stdint.h>
 
-#include "lab2_config.h"
+#include "elog.h"
 #include "uart.h"
 
 #define PERIPH_BASE        0x40000000UL
@@ -69,28 +69,31 @@ static void led_off(void)
 
 int main(void)
 {
+  enum { RX_FRAME_LEN = 10 };
+
   systick_init();
   led_init();
   uart1_init();
+  elog_init();
+  elog_start();
+  elog_set_filter_lvl(ELOG_LVL_DEBUG);
 
-  uart1_write_string("\r\nLab2 USART polling demo started.\r\n");
+  elog_d("debug log demo");
+  elog_i("info log demo");
+  elog_e("error log demo");
 
-  uint32_t next_send_ms = 0;
   uint32_t next_led_ms = 0;
   uint32_t led_is_on = 0;
+  char rx_frame[RX_FRAME_LEN];
+  uint32_t rx_len = 0;
 
   while (1) {
     const uint32_t now = millis();
-    char received;
 
-    if ((int32_t)(now - next_send_ms) >= 0) {
-      uart1_write_string("Name pinyin: " LAB2_NAME_PINYIN "\r\n");
-      next_send_ms = now + 1000U;
-    }
-
-    if (uart1_read_char_nonblocking(&received)) {
-      uart1_write_string("RX: ");
-      uart1_write_char(received);
+    if (uart1_take_rx_frame(rx_frame, sizeof(rx_frame), &rx_len)) {
+      for (uint32_t i = 0U; i < rx_len; i++) {
+        uart1_write_char(rx_frame[i]);
+      }
       uart1_write_string("\r\n");
     }
 

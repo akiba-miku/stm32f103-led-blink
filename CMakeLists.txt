@@ -11,6 +11,7 @@ set(MCU_FLAGS
 
 add_executable(${PROJECT_NAME}.elf
     Core/Src/main.c
+    Core/Src/elog.c
     Core/Src/uart.c
     startup_stm32f103xb.s
 )
@@ -31,10 +32,11 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
 
 target_link_options(${PROJECT_NAME}.elf PRIVATE
     ${MCU_FLAGS}
-    -nostdlib
     -T${CMAKE_CURRENT_SOURCE_DIR}/STM32F103C8Tx_FLASH.ld
     -Wl,--gc-sections
     -Wl,-Map=${PROJECT_NAME}.map
+    -specs=nano.specs
+    -specs=nosys.specs
 )
 
 add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD

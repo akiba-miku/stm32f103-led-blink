@@ -1,10 +1,11 @@
-# 实验二：USART 串口发送与轮询接收
+# 实验二：USART 串口 DMA + IDLE 接收与回显
 
 ## 实验目标
 
-- 使用 USART1 每 1 秒发送一次自己的姓名汉语拼音。
-- 使用轮询方式接收串口数据。
-- 收到数据后通过串口回显，证明接收功能正常。
+- 使用 USART1 DMA 接收串口数据，并用 IDLE 中断判断一帧结束。
+- 每次最长接收 10 个字符，收到空闲或满 10 字符后，将实际接收内容原样回显到串口。
+- 通过 EasyLogger 分别输出 `debug/info/error` 三类日志，验证日志系统是否生效。
+- 板载 LED 继续闪烁，用于确认程序在运行。
 
 ## 硬件连接
 
@@ -14,41 +15,32 @@
 | PA10 / USART1_RX | TX |
 | GND | GND |
 
-串口参数：`115200 8N1`。
+串口参数：`9600 8N1`。
 
 ## 代码结构
 
 | 文件 | 作用 |
 | --- | --- |
-| `Core/Inc/lab2_config.h` | 配置姓名拼音 |
 | `Core/Inc/uart.h` | USART1 接口声明 |
-| `Core/Src/uart.c` | USART1 初始化、发送、轮询接收 |
+| `Core/Inc/elog.h` | EasyLogger 接口声明 |
+| `Core/Src/elog.c` | EasyLogger 输出实现 |
+| `Core/Src/uart.c` | USART1 初始化、发送、DMA 接收、IDLE 中断 |
 | `Core/Src/main.c` | 实验主流程 |
-
-提交前请把 `Core/Inc/lab2_config.h` 中的：
-
-```c
-#define LAB2_NAME_PINYIN "YOUR_NAME_PINYIN"
-```
-
-改成自己的姓名拼音，例如：
-
-```c
-#define LAB2_NAME_PINYIN "Zhang San"
-```
 
 ## 运行现象
 
-串口终端每 1 秒收到一行：
+串口终端发送字符后，若总长度未满 10 个字符，停止发送会触发 IDLE 回显；若连续发送满 10 个字符，则满 10 后回显：
 
 ```text
-Name pinyin: Zhang San
+ABCDEFGHIJ
 ```
 
-在串口终端发送任意字符，单片机会回显：
+同时程序会在启动后打印三行日志：
 
 ```text
-RX: A
+[D] main:<line> debug log demo
+[I] main:<line> info log demo
+[E] main:<line> error log demo
 ```
 
 同时板载 PC13 LED 继续以 500 ms 周期翻转，用于确认程序正在运行。

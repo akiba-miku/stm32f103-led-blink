@@ -51,5 +51,9 @@ SECTIONS
     _ebss = .;
   } >RAM
 
+  PROVIDE(end = _ebss);
+  PROVIDE(_end = _ebss);
+  PROVIDE(__end__ = _ebss);
+
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }
