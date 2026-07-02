@@ -18,7 +18,9 @@
 #define MAX_TASKS      8
 #define MAX_SEMS       8
 #define MAX_MSGQS      8
+#define MAX_MAILBOXES  8
 #define MSGQ_DEPTH     8
+#define MAILBOX_DEPTH  8
 
 /* ── TCB ──────────────────────────────────────────────────────── */
 
@@ -49,12 +51,22 @@ struct rtos_msgq {
   uint32_t count;
 };
 
+/* ── Mailbox queue ───────────────────────────────────────────── */
+
+struct rtos_mailbox {
+  rtos_mail_t buffer[MAILBOX_DEPTH];
+  uint32_t head;
+  uint32_t tail;
+  uint32_t count;
+};
+
 /* ── Kernel globals ───────────────────────────────────────────── */
 
 static rtos_task_t  s_tcbs[MAX_TASKS];
 static uint32_t     s_stacks[MAX_TASKS][256];     /* 1 KB each */
 static rtos_sem_t   s_sems[MAX_SEMS];
 static rtos_msgq_t  s_msgqs[MAX_MSGQS];
+static rtos_mailbox_t s_mailboxes[MAX_MAILBOXES];
 static rtos_task_t  s_idle_tcb;
 static uint32_t     s_idle_stack[64];
 
@@ -62,6 +74,7 @@ static rtos_task_t *s_ready;
 static rtos_sem_t  *s_sem_free;
 static int          s_num_tasks;
 static int          s_num_msgqs;
+static int          s_num_mailboxes;
 
 rtos_task_t *g_curr_tcb;
 static volatile uint32_t s_tick_ms;
@@ -318,6 +331,60 @@ int rtos_msgq_try_recv(rtos_msgq_t *q, uint32_t *msg)
   *msg = q->buffer[q->head];
   q->head = (q->head + 1U) % MSGQ_DEPTH;
   q->count--;
+
+  crit_exit(p);
+  return 1;
+}
+
+/* ── Mailbox queue ops ───────────────────────────────────────── */
+
+rtos_mailbox_t *rtos_mailbox_create(void)
+{
+  uint32_t p = crit_enter();
+
+  if (s_num_mailboxes >= MAX_MAILBOXES) {
+    crit_exit(p);
+    return 0;
+  }
+
+  rtos_mailbox_t *box = &s_mailboxes[s_num_mailboxes++];
+  box->head = 0U;
+  box->tail = 0U;
+  box->count = 0U;
+
+  crit_exit(p);
+  return box;
+}
+
+int rtos_mailbox_send(rtos_mailbox_t *box, const rtos_mail_t *mail)
+{
+  uint32_t p = crit_enter();
+
+  if (box->count >= MAILBOX_DEPTH) {
+    crit_exit(p);
+    return 0;
+  }
+
+  box->buffer[box->tail] = *mail;
+  box->tail = (box->tail + 1U) % MAILBOX_DEPTH;
+  box->count++;
+
+  crit_exit(p);
+  return 1;
+}
+
+int rtos_mailbox_try_recv(rtos_mailbox_t *box, rtos_mail_t *mail)
+{
+  uint32_t p = crit_enter();
+
+  if (box->count == 0U) {
+    crit_exit(p);
+    return 0;
+  }
+
+  *mail = box->buffer[box->head];
+  box->head = (box->head + 1U) % MAILBOX_DEPTH;
+  box->count--;
 
   crit_exit(p);
   return 1;

@@ -1,17 +1,21 @@
-# STM32F103C8T6 LED 闪灯（Linux 原生开发流程）
+# STM32F103C8T6 RTOS 邮箱队列温湿度实验
 
 把传统的 **Keil µVision5 实验** 改造成 **Arch Linux 原生嵌入式开发流程**。
-目标功能：板载 LED **亮 500ms → 灭 500ms** 循环（即每 500ms 翻转一次电平）。
+目标功能：DHT11 采集线程每 1 秒读取温湿度，通过邮箱队列分别发送给串口线程和
+LED 线程；串口线程打印温湿度，LED 线程根据温度切换快慢闪。
 
-当前工程包含多线程消息队列实验：一个线程负责 PC13 点灯，一个线程负责 USART1 发送字符；
-PA0/PA1 按键中断通过消息队列向两个线程发送不同码值。详见
-[docs/rtos-message-queue.md](docs/rtos-message-queue.md)。
+当前工程包含多线程邮箱队列实验：一个线程每秒采集 DHT11 温湿度，一个线程通过
+USART1 打印温湿度，一个线程根据温度控制 PC13 LED 闪烁速度。温度超过 29 摄氏度
+快闪，否则慢闪。详见
+[docs/rtos-mailbox-dht11.md](docs/rtos-mailbox-dht11.md)。
 
 | 项目 | 值 |
 | --- | --- |
 | MCU | **STM32F103C8T6**（Cortex-M3, 64KB Flash, 20KB RAM, 封装 LQFP48） |
 | 开发板 | Blue Pill（最常见的小蓝板） |
 | LED 引脚 | **PC13**（Blue Pill 板载 LED，**低电平点亮 / active-low**） |
+| DHT11 DATA | **PC15** |
+| 串口 | **USART1：PA9 TX / PA10 RX，9600 8N1** |
 | 调试器 | **ST-LINK V2** |
 | 工程类型 | Arch Linux 原生 **CMake + arm-none-eabi-gcc** 裸机工程 |
 | OpenOCD target | `target/stm32f1x.cfg` |
@@ -40,7 +44,7 @@ PA0/PA1 按键中断通过消息队列向两个线程发送不同码值。详见
   OpenOCD + ST-LINK            （烧录 + 调试，等价于 Keil 的 Download/Debug）
         │  + arm-none-eabi-gdb （命令行/图形调试）
         ▼
-  开发板上的 LED 闪起来
+  开发板运行温湿度采集和 LED 告警逻辑
   ```
 
 - 课程要求里的 “MDK5” 在 Linux 下由 **arm-none-eabi-gcc 工具链** 替代，
@@ -87,13 +91,16 @@ st-info --probe        # 插上 ST-LINK 后能看到设备
 
 ## 三、当前工程状态
 
-本目录已经包含可直接构建和烧录的 STM32F103C8T6 点灯工程：
+本目录已经包含可直接构建和烧录的 STM32F103C8T6 多线程邮箱队列工程：
 
 ```
 stm32f103-led-blink/
 ├── CMakeLists.txt
 ├── cmake/arm-none-eabi.cmake
-├── Core/Src/main.c                # PC13 LED: 500ms 亮 / 500ms 灭
+├── Core/Src/main.c                # 三个 RTOS 线程和邮箱队列使用逻辑
+├── Core/Src/rtos.c                # 简易 RTOS + 邮箱队列
+├── Core/Src/dht11.c               # DHT11 PC15 驱动
+├── Core/Src/uart.c                # USART1 printf 输出
 ├── startup_stm32f103xb.s
 ├── STM32F103C8Tx_FLASH.ld
 ├── build.sh
@@ -101,10 +108,10 @@ stm32f103-led-blink/
 ```
 
 这里采用寄存器裸机方式实现，不依赖 HAL 包下载；`SysTick` 每 1ms 中断一次，
-主循环中执行 `led_on(); delay_ms(500); led_off(); delay_ms(500);`。
+RTOS 调度 3 个线程：温湿度采集线程、串口发送线程、LED 控制线程。
 
 如果课程必须提交 STM32CubeMX 截图或 `.ioc` 文件，可再按下面步骤用 CubeMX 生成
-同名 CMake 工程，然后把 `Core/Src/main.c` 的点灯逻辑放进 USER CODE 区。
+同名 CMake 工程，然后把本工程的 `Core/Src` 与 `Core/Inc` 代码迁入生成工程。
 
 ## 四、用 STM32CubeMX 重新生成工程（可选）
 
@@ -148,27 +155,15 @@ stm32f103-led-blink/
 
 ---
 
-## 五、修改 LED 代码（main.c）
+## 五、主要代码位置
 
-只在 CubeMX 的 `USER CODE` 注释区内写代码，**不要动自动生成区**，否则下次
-重新生成会丢代码 / 冲突。在 `Core/Src/main.c` 的主循环里：
+- `Core/Src/main.c`：创建温湿度采集线程、串口线程、LED 线程。
+- `Core/Src/rtos.c`：实现任务调度、信号量、消息队列和本次使用的邮箱队列。
+- `Core/Src/dht11.c`：DHT11 驱动，DATA 接 PC15。
+- `Core/Src/uart.c`：USART1 初始化和 `printf` 输出重定向。
 
-```c
-  /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    /* PC13 板载 LED：每 500ms 翻转一次 → 亮 500ms / 灭 500ms */
-    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-    HAL_Delay(500);
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
-  }
-  /* USER CODE END 3 */
-```
-
-> Blue Pill 的 PC13 是 **低电平点亮**，但 `TogglePin` 不关心极性——它只是反转电平，
-> 因此“亮 500ms / 灭 500ms”的占空比与时序完全满足实验要求。
+本次实验的邮箱队列接口是 `rtos_mailbox_create`、`rtos_mailbox_send`、
+`rtos_mailbox_try_recv`。
 
 ---
 
@@ -238,16 +233,16 @@ VS Code 用 **Cortex-Debug** 扩展可图形化调试（见下）。
 
 ---
 
-## 九、验证 LED 500ms 闪烁
+## 九、验证实验结果
 
 1. 烧录后开发板自动复位运行。
-2. 肉眼观察板载 LED：**亮约半秒 → 灭约半秒**，规律往复 = 成功。
-3. 想更精确：用手机慢动作录像，或逻辑分析仪/示波器测 PC13，周期应为 **1s（500ms 高 + 500ms 低）**。
-4. 注意 `HAL_Delay` 依赖 SysTick=1ms，CubeMX 默认已配置；若灯不闪先确认时钟与 SysTick。
+2. 串口监听 `9600 8N1`，应每秒看到一行温湿度输出。
+3. 温度大于 29 摄氏度时，PC13 LED 快闪；温度小于等于 29 摄氏度时慢闪。
+4. 若串口显示 `DHT11 read failed`，优先检查 PC15、3.3V、GND 和 DATA 上拉。
 
 ---
 
-## 九、VS Code 扩展（可选）
+## 十、VS Code 扩展（可选）
 
 - **C/C++**（ms-vscode.cpptools）
 - **CMake Tools**（ms-vscode.cmake-tools）
@@ -256,7 +251,7 @@ VS Code 用 **Cortex-Debug** 扩展可图形化调试（见下）。
 
 ---
 
-## 十、出问题怎么排查
+## 十一、出问题怎么排查
 
 见 [docs/linux-stm32-workflow.md](docs/linux-stm32-workflow.md) 的“故障排查”一节
 （ST-LINK 权限 / udev、OpenOCD 找不到设备、编译报错等）。
@@ -264,5 +259,5 @@ VS Code 用 **Cortex-Debug** 扩展可图形化调试（见下）。
 ## 需要你确认的点（TODO）
 
 - [ ] 确认板子确实是 **Blue Pill**、LED 在 **PC13**（不是的话改 `main.c` 和本 README）。
-- [ ] 用 STM32CubeMX **CMake** 选项把工程生成到本目录。
+- [ ] DHT11 DATA 已接 **PC15**，串口使用 **PA9/PA10**，并且共地。
 - [ ] 装好 `arm-none-eabi-gcc / newlib / openocd / stlink`（见第二节）。

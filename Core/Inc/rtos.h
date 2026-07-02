@@ -6,6 +6,14 @@
 typedef struct rtos_task  rtos_task_t;
 typedef struct rtos_sem   rtos_sem_t;
 typedef struct rtos_msgq  rtos_msgq_t;
+typedef struct rtos_mailbox rtos_mailbox_t;
+
+typedef struct {
+  uint32_t id;
+  uint32_t value0;
+  uint32_t value1;
+  uint32_t value2;
+} rtos_mail_t;
 
 /* ── Task API ─────────────────────────────────────────────────── */
 
@@ -52,6 +60,21 @@ int rtos_msgq_send(rtos_msgq_t *q, uint32_t msg);
 
 /* Receive one message without blocking. Returns 1 when a message was read. */
 int rtos_msgq_try_recv(rtos_msgq_t *q, uint32_t *msg);
+
+/* ── Mailbox Queue API ──────────────────────────────────────── */
+
+/*
+ * Create a fixed-depth mailbox queue. Each mail carries one id and three
+ * 32-bit values, suitable for sending small structured data between tasks.
+ * Returns NULL if out of mailbox slots (max 8).
+ */
+rtos_mailbox_t *rtos_mailbox_create(void);
+
+/* Send one mail. Safe to call from ISR. Returns 1 on success. */
+int rtos_mailbox_send(rtos_mailbox_t *box, const rtos_mail_t *mail);
+
+/* Receive one mail without blocking. Returns 1 when a mail was read. */
+int rtos_mailbox_try_recv(rtos_mailbox_t *box, rtos_mail_t *mail);
 
 /* ── Scheduler ────────────────────────────────────────────────── */
 

@@ -89,6 +89,21 @@ static int data_read(void)
   return (int)((GPIOC_IDR >> DHT11_PIN) & 1U);
 }
 
+static uint32_t irq_save(void)
+{
+  uint32_t primask;
+  __asm volatile("mrs %0, primask" : "=r"(primask));
+  __asm volatile("cpsid i" ::: "memory");
+  return primask;
+}
+
+static void irq_restore(uint32_t primask)
+{
+  if ((primask & 1U) == 0U) {
+    __asm volatile("cpsie i" ::: "memory");
+  }
+}
+
 static int wait_data_level(int level, uint32_t timeout_us)
 {
   const uint32_t start = cycles_now();
@@ -120,7 +135,11 @@ void dht11_init(void)
 int dht11_read(uint8_t *humidity_int, uint8_t *temperature_int)
 {
   uint8_t data[5] = {0U, 0U, 0U, 0U, 0U};
+  const char *diag = 0;
+  uint32_t primask;
+  int result = DHT11_OK;
 
+  primask = irq_save();
   data_output_open_drain();
   data_low();
   delay_us(18000U);
@@ -130,18 +149,21 @@ int dht11_read(uint8_t *humidity_int, uint8_t *temperature_int)
   data_input_pullup();
 
   if (!wait_data_level(0, 120U)) {
-    print_diag("no response on PC15");
-    return DHT11_ERR_NO_RESPONSE;
+    diag = "no response on PC15";
+    result = DHT11_ERR_NO_RESPONSE;
+    goto done;
   }
 
   if (!wait_data_level(1, 120U)) {
-    print_diag("response low timeout");
-    return DHT11_ERR_LOW_TIMEOUT;
+    diag = "response low timeout";
+    result = DHT11_ERR_LOW_TIMEOUT;
+    goto done;
   }
 
   if (!wait_data_level(0, 120U)) {
-    print_diag("response high timeout");
-    return DHT11_ERR_HIGH_TIMEOUT;
+    diag = "response high timeout";
+    result = DHT11_ERR_HIGH_TIMEOUT;
+    goto done;
   }
 
   for (uint32_t byte = 0U; byte < 5U; byte++) {
@@ -150,15 +172,17 @@ int dht11_read(uint8_t *humidity_int, uint8_t *temperature_int)
       uint32_t high_us;
 
       if (!wait_data_level(1, 80U)) {
-        print_diag("bit low timeout");
-        return DHT11_ERR_BIT_START;
+        diag = "bit low timeout";
+        result = DHT11_ERR_BIT_START;
+        goto done;
       }
 
       high_start = cycles_now();
 
       if (!wait_data_level(0, 120U)) {
-        print_diag("bit high timeout");
-        return DHT11_ERR_BIT_END;
+        diag = "bit high timeout";
+        result = DHT11_ERR_BIT_END;
+        goto done;
       }
 
       high_us = elapsed_us(high_start);
@@ -170,6 +194,21 @@ int dht11_read(uint8_t *humidity_int, uint8_t *temperature_int)
   }
 
   if (data[4] != (uint8_t)(data[0] + data[1] + data[2] + data[3])) {
+    result = DHT11_ERR_CHECKSUM;
+  } else {
+    *humidity_int = data[0];
+    *temperature_int = data[2];
+  }
+
+done:
+  data_input_pullup();
+  irq_restore(primask);
+
+  if (diag != 0) {
+    print_diag(diag);
+  }
+
+  if (result == DHT11_ERR_CHECKSUM) {
     char buf[96];
 
     snprintf(buf, sizeof(buf),
@@ -180,11 +219,7 @@ int dht11_read(uint8_t *humidity_int, uint8_t *temperature_int)
              (unsigned int)data[3],
              (unsigned int)data[4]);
     uart1_write_string(buf);
-    return DHT11_ERR_CHECKSUM;
   }
 
-  *humidity_int = data[0];
-  *temperature_int = data[2];
-
-  return DHT11_OK;
+  return result;
 }
