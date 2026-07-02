@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "dht11.h"
 #include "rtos.h"
 #include "uart.h"
 
@@ -47,30 +48,105 @@
 
 #define TIM2_IRQN        28UL
 #define LED_PIN          13UL
-
 #define KEY0_PIN         0UL
 #define KEY1_PIN         1UL
-#define KEY0_MSG         0x10UL
-#define KEY1_MSG         0x20UL
+
+#define KEY0_CODE        0x10UL
+#define KEY1_CODE        0x20UL
 #define KEY_DEBOUNCE_TICKS 3U
+
+#define HUMIDITY_HIGH_THRESHOLD 60U
+#define LED_FAST_BLINK_MS       100U
+#define LED_SLOW_BLINK_MS       800U
+
+enum {
+  APP_EVT_KEY_RELEASED = 1,
+  APP_EVT_SENSOR_SAMPLE_DUE = 2,
+};
+
+enum {
+  UART_EVT_PRINT_SAMPLE = 1,
+  UART_EVT_PRINT_ERROR = 2,
+};
+
+enum {
+  LED_EVT_HUMIDITY = 1,
+  LED_EVT_SENSOR_ERROR = 2,
+};
 
 typedef struct {
   uint32_t pin;
-  uint32_t msg;
+  uint32_t code;
   uint8_t stable_pressed;
   uint8_t candidate_pressed;
   uint8_t debounce_ticks;
-} key_scan_t;
+} key_button_t;
 
-static rtos_msgq_t *led_msgq;
-static rtos_msgq_t *uart_msgq;
+typedef struct {
+  uint8_t valid;
+  uint8_t temperature;
+  uint8_t humidity;
+  uint32_t tick;
+  int error;
+} sensor_state_t;
 
-static key_scan_t keys[] = {
-  {KEY0_PIN, KEY0_MSG, 0U, 0U, 0U},
-  {KEY1_PIN, KEY1_MSG, 0U, 0U, 0U},
+static rtos_mailbox_t *app_event_q;
+static rtos_mailbox_t *uart_event_q;
+static rtos_mailbox_t *led_event_q;
+
+static sensor_state_t sensor_state;
+
+static key_button_t key_buttons[] = {
+  {KEY0_PIN, KEY0_CODE, 0U, 0U, 0U},
+  {KEY1_PIN, KEY1_CODE, 0U, 0U, 0U},
 };
 
-static void led_init(void)
+static void app_post_event(uint32_t id, uint32_t value0, uint32_t value1,
+                           uint32_t value2)
+{
+  rtos_mail_t event;
+
+  event.id = id;
+  event.value0 = value0;
+  event.value1 = value1;
+  event.value2 = value2;
+
+  if (app_event_q != 0) {
+    (void)rtos_mailbox_send(app_event_q, &event);
+  }
+}
+
+static void uart_post_event(uint32_t id, uint32_t value0, uint32_t value1,
+                            uint32_t value2)
+{
+  rtos_mail_t event;
+
+  event.id = id;
+  event.value0 = value0;
+  event.value1 = value1;
+  event.value2 = value2;
+
+  if (uart_event_q != 0) {
+    (void)rtos_mailbox_send(uart_event_q, &event);
+  }
+}
+
+static void led_post_event(uint32_t id, uint32_t value0, uint32_t value1,
+                           uint32_t value2)
+{
+  rtos_mail_t event;
+
+  event.id = id;
+  event.value0 = value0;
+  event.value1 = value1;
+  event.value2 = value2;
+
+  if (led_event_q != 0) {
+    (void)rtos_mailbox_send(led_event_q, &event);
+  }
+}
+
+static void led_gpio_init(void)
 {
   RCC_APB2ENR |= RCC_APB2ENR_IOPCEN;
 
@@ -100,7 +176,7 @@ static void led_toggle(uint32_t *is_on)
   }
 }
 
-static void button_init(void)
+static void key_scan_init(void)
 {
   RCC_APB2ENR |= RCC_APB2ENR_IOPAEN;
 
@@ -114,50 +190,44 @@ static uint32_t key_is_pressed(uint32_t pin)
   return ((GPIOA_IDR & (1UL << pin)) == 0U) ? 1U : 0U;
 }
 
-static void post_key_release_message(uint32_t msg)
+static void key_scan_poll_button(key_button_t *button)
 {
-  (void)rtos_msgq_send(led_msgq, msg);
-  (void)rtos_msgq_send(uart_msgq, msg);
-}
+  const uint8_t raw_pressed = (uint8_t)key_is_pressed(button->pin);
 
-static void scan_one_key(key_scan_t *key)
-{
-  const uint8_t raw_pressed = (uint8_t)key_is_pressed(key->pin);
-
-  if (raw_pressed == key->candidate_pressed) {
-    if (key->debounce_ticks < KEY_DEBOUNCE_TICKS) {
-      key->debounce_ticks++;
+  if (raw_pressed == button->candidate_pressed) {
+    if (button->debounce_ticks < KEY_DEBOUNCE_TICKS) {
+      button->debounce_ticks++;
     }
   } else {
-    key->candidate_pressed = raw_pressed;
-    key->debounce_ticks = 1U;
+    button->candidate_pressed = raw_pressed;
+    button->debounce_ticks = 1U;
   }
 
-  if (key->debounce_ticks < KEY_DEBOUNCE_TICKS ||
-      key->stable_pressed == key->candidate_pressed) {
+  if (button->debounce_ticks < KEY_DEBOUNCE_TICKS ||
+      button->stable_pressed == button->candidate_pressed) {
     return;
   }
 
-  key->stable_pressed = key->candidate_pressed;
-  if (key->stable_pressed == 0U) {
-    post_key_release_message(key->msg);
+  button->stable_pressed = button->candidate_pressed;
+  if (button->stable_pressed == 0U) {
+    app_post_event(APP_EVT_KEY_RELEASED, button->code, 0U, rtos_tick());
   }
 }
 
-static void scan_keys(void)
+static void key_scan_poll_10ms(void)
 {
-  for (uint32_t i = 0U; i < (sizeof(keys) / sizeof(keys[0])); i++) {
-    scan_one_key(&keys[i]);
+  for (uint32_t i = 0U; i < (sizeof(key_buttons) / sizeof(key_buttons[0])); i++) {
+    key_scan_poll_button(&key_buttons[i]);
   }
 }
 
-static void tim2_key_scan_init(void)
+static void timer_event_init(void)
 {
   RCC_APB1ENR |= RCC_APB1ENR_TIM2EN;
 
   TIM2_CR1 = 0U;
   TIM2_PSC = 7999U; /* 8 MHz / (7999 + 1) = 1 kHz. */
-  TIM2_ARR = 9U;    /* 1 kHz / (9 + 1) = 100 Hz, scan every 10 ms. */
+  TIM2_ARR = 9U;    /* 1 kHz / (9 + 1) = 100 Hz, tick every 10 ms. */
   TIM2_EGR = TIM_EGR_UG;
   TIM2_SR = 0U;
   TIM2_DIER = TIM_DIER_UIE;
@@ -170,31 +240,127 @@ static void tim2_key_scan_init(void)
 
 void TIM2_IRQHandler(void)
 {
+  static uint32_t sensor_ticks;
+
   if ((TIM2_SR & TIM_SR_UIF) == 0U) {
     return;
   }
 
   TIM2_SR &= ~TIM_SR_UIF;
-  scan_keys();
+
+  key_scan_poll_10ms();
+
+  sensor_ticks++;
+  if (sensor_ticks >= 100U) {
+    sensor_ticks = 0U;
+    app_post_event(APP_EVT_SENSOR_SAMPLE_DUE, 0U, 0U, rtos_tick());
+  }
+}
+
+static void sensor_module_sample(void)
+{
+  uint8_t humidity = 0U;
+  uint8_t temperature = 0U;
+  const int error = dht11_read(&humidity, &temperature);
+
+  sensor_state.error = error;
+  sensor_state.tick = rtos_tick();
+
+  if (error == DHT11_OK) {
+    sensor_state.valid = 1U;
+    sensor_state.temperature = temperature;
+    sensor_state.humidity = humidity;
+    led_post_event(LED_EVT_HUMIDITY, humidity, temperature, sensor_state.tick);
+  } else {
+    sensor_state.valid = 0U;
+    led_post_event(LED_EVT_SENSOR_ERROR, (uint32_t)error, 0U, sensor_state.tick);
+  }
+}
+
+static void uart_module_print_current_sample(uint32_t key_code)
+{
+  if (sensor_state.valid != 0U) {
+    uart_post_event(UART_EVT_PRINT_SAMPLE,
+                    key_code,
+                    sensor_state.temperature,
+                    sensor_state.humidity);
+  } else {
+    uart_post_event(UART_EVT_PRINT_ERROR,
+                    key_code,
+                    (uint32_t)sensor_state.error,
+                    sensor_state.tick);
+  }
+}
+
+static void event_thread(void *arg)
+{
+  (void)arg;
+
+  while (1) {
+    rtos_mail_t event;
+
+    while (rtos_mailbox_try_recv(app_event_q, &event)) {
+      if (event.id == APP_EVT_SENSOR_SAMPLE_DUE) {
+        sensor_module_sample();
+      } else if (event.id == APP_EVT_KEY_RELEASED) {
+        uart_module_print_current_sample(event.value0);
+      }
+    }
+
+    rtos_delay_ms(10U);
+  }
+}
+
+static void uart_thread(void *arg)
+{
+  (void)arg;
+
+  while (1) {
+    rtos_mail_t event;
+
+    while (rtos_mailbox_try_recv(uart_event_q, &event)) {
+      if (event.id == UART_EVT_PRINT_SAMPLE) {
+        printf("[UART] key=0x%02lX temp=%lu C humidity=%lu %%RH\r\n",
+               (unsigned long)event.value0,
+               (unsigned long)event.value1,
+               (unsigned long)event.value2);
+      } else if (event.id == UART_EVT_PRINT_ERROR) {
+        if (event.value2 == 0U) {
+          printf("[UART] key=0x%02lX no sensor sample yet\r\n",
+                 (unsigned long)event.value0);
+        } else {
+          printf("[UART] key=0x%02lX DHT11 read failed, error=%lu\r\n",
+                 (unsigned long)event.value0,
+                 (unsigned long)event.value1);
+        }
+      }
+    }
+
+    rtos_delay_ms(20U);
+  }
 }
 
 static void led_thread(void *arg)
 {
   uint32_t led_is_on = 0U;
-  uint32_t blink_period_ms = 500U;
+  uint32_t blink_period_ms = LED_SLOW_BLINK_MS;
   uint32_t next_toggle_ms = 0U;
 
   (void)arg;
 
   while (1) {
-    uint32_t msg;
+    rtos_mail_t event;
     const uint32_t now = rtos_tick();
 
-    while (rtos_msgq_try_recv(led_msgq, &msg)) {
-      if (msg == KEY0_MSG) {
-        blink_period_ms = 100U;
-      } else if (msg == KEY1_MSG) {
-        blink_period_ms = 800U;
+    while (rtos_mailbox_try_recv(led_event_q, &event)) {
+      if (event.id == LED_EVT_HUMIDITY) {
+        if (event.value0 >= HUMIDITY_HIGH_THRESHOLD) {
+          blink_period_ms = LED_FAST_BLINK_MS;
+        } else {
+          blink_period_ms = LED_SLOW_BLINK_MS;
+        }
+      } else if (event.id == LED_EVT_SENSOR_ERROR) {
+        blink_period_ms = LED_SLOW_BLINK_MS;
       }
       next_toggle_ms = now;
     }
@@ -208,54 +374,28 @@ static void led_thread(void *arg)
   }
 }
 
-static void uart_thread(void *arg)
-{
-  char next_char = 'A';
-  uint32_t next_send_ms = 0U;
-
-  (void)arg;
-
-  while (1) {
-    uint32_t msg;
-    const uint32_t now = rtos_tick();
-
-    while (rtos_msgq_try_recv(uart_msgq, &msg)) {
-      printf("[UART thread] key released, code=0x%02lX\r\n",
-             (unsigned long)msg);
-    }
-
-    if ((int32_t)(now - next_send_ms) >= 0) {
-      printf("[UART thread] send char: %c\r\n", next_char);
-      next_char++;
-      if (next_char > 'Z') {
-        next_char = 'A';
-      }
-      next_send_ms = now + 1000U;
-    }
-
-    rtos_delay_ms(20U);
-  }
-}
-
 int main(void)
 {
   uart1_init();
-  led_init();
-  button_init();
+  led_gpio_init();
+  key_scan_init();
+  dht11_init();
 
-  led_msgq = rtos_msgq_create();
-  uart_msgq = rtos_msgq_create();
+  app_event_q = rtos_mailbox_create();
+  uart_event_q = rtos_mailbox_create();
+  led_event_q = rtos_mailbox_create();
 
-  uart1_write_string("\r\nRTOS timer key scan message queue demo\r\n");
-  uart1_write_string("TIM2 scans PA0/PA1 every 10 ms and sends messages on key release\r\n");
-  uart1_write_string("PA0 release -> code 0x10, LED fast blink\r\n");
-  uart1_write_string("PA1 release -> code 0x20, LED slow blink\r\n");
-  uart1_write_string("UART1: PA9 TX, PA10 RX, 9600 8N1\r\n\r\n");
+  uart1_write_string("\r\nEvent-driven DHT11 key demo\r\n");
+  uart1_write_string("TIM2: key scan every 10 ms, DHT11 sample every 1 second\r\n");
+  uart1_write_string("Press and release PA0/PA1 to print current temperature/humidity\r\n");
+  uart1_write_string("LED: humidity >= 60%RH fast blink, otherwise slow blink\r\n");
+  uart1_write_string("DHT11 DATA: PC15, UART1: PA9 TX / PA10 RX, 9600 8N1\r\n\r\n");
 
-  rtos_task_create(led_thread, 0, 256);
+  rtos_task_create(event_thread, 0, 256);
   rtos_task_create(uart_thread, 0, 256);
+  rtos_task_create(led_thread, 0, 256);
 
-  tim2_key_scan_init();
+  timer_event_init();
   rtos_start();
 
   while (1) {
