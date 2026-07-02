@@ -5,6 +5,7 @@
 
 typedef struct rtos_task  rtos_task_t;
 typedef struct rtos_sem   rtos_sem_t;
+typedef struct rtos_msgq  rtos_msgq_t;
 
 /* ── Task API ─────────────────────────────────────────────────── */
 
@@ -37,6 +38,20 @@ int rtos_sem_try_wait(rtos_sem_t *s);
 /* Increment the semaphore.  Wakes one waiter if any.
  * Safe to call from ISR. */
 void rtos_sem_signal(rtos_sem_t *s);
+
+/* ── Message Queue API ───────────────────────────────────────── */
+
+/*
+ * Create a fixed-depth message queue. Messages are 32-bit values.
+ * Returns NULL if out of queue slots (max 8).
+ */
+rtos_msgq_t *rtos_msgq_create(void);
+
+/* Send one message. Safe to call from ISR. Returns 1 on success. */
+int rtos_msgq_send(rtos_msgq_t *q, uint32_t msg);
+
+/* Receive one message without blocking. Returns 1 when a message was read. */
+int rtos_msgq_try_recv(rtos_msgq_t *q, uint32_t *msg);
 
 /* ── Scheduler ────────────────────────────────────────────────── */
 

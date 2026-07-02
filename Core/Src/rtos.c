@@ -17,6 +17,8 @@
 
 #define MAX_TASKS      8
 #define MAX_SEMS       8
+#define MAX_MSGQS      8
+#define MSGQ_DEPTH     8
 
 /* ── TCB ──────────────────────────────────────────────────────── */
 
@@ -38,17 +40,28 @@ struct rtos_sem {
   struct rtos_sem *next;         /* free list */
 };
 
+/* ── Message queue ────────────────────────────────────────────── */
+
+struct rtos_msgq {
+  uint32_t buffer[MSGQ_DEPTH];
+  uint32_t head;
+  uint32_t tail;
+  uint32_t count;
+};
+
 /* ── Kernel globals ───────────────────────────────────────────── */
 
 static rtos_task_t  s_tcbs[MAX_TASKS];
 static uint32_t     s_stacks[MAX_TASKS][256];     /* 1 KB each */
 static rtos_sem_t   s_sems[MAX_SEMS];
+static rtos_msgq_t  s_msgqs[MAX_MSGQS];
 static rtos_task_t  s_idle_tcb;
 static uint32_t     s_idle_stack[64];
 
 static rtos_task_t *s_ready;
 static rtos_sem_t  *s_sem_free;
 static int          s_num_tasks;
+static int          s_num_msgqs;
 
 rtos_task_t *g_curr_tcb;
 static volatile uint32_t s_tick_ms;
@@ -254,6 +267,60 @@ void rtos_sem_signal(rtos_sem_t *s)
   }
 
   crit_exit(p);
+}
+
+/* ── Message queue ops ───────────────────────────────────────── */
+
+rtos_msgq_t *rtos_msgq_create(void)
+{
+  uint32_t p = crit_enter();
+
+  if (s_num_msgqs >= MAX_MSGQS) {
+    crit_exit(p);
+    return 0;
+  }
+
+  rtos_msgq_t *q = &s_msgqs[s_num_msgqs++];
+  q->head = 0U;
+  q->tail = 0U;
+  q->count = 0U;
+
+  crit_exit(p);
+  return q;
+}
+
+int rtos_msgq_send(rtos_msgq_t *q, uint32_t msg)
+{
+  uint32_t p = crit_enter();
+
+  if (q->count >= MSGQ_DEPTH) {
+    crit_exit(p);
+    return 0;
+  }
+
+  q->buffer[q->tail] = msg;
+  q->tail = (q->tail + 1U) % MSGQ_DEPTH;
+  q->count++;
+
+  crit_exit(p);
+  return 1;
+}
+
+int rtos_msgq_try_recv(rtos_msgq_t *q, uint32_t *msg)
+{
+  uint32_t p = crit_enter();
+
+  if (q->count == 0U) {
+    crit_exit(p);
+    return 0;
+  }
+
+  *msg = q->buffer[q->head];
+  q->head = (q->head + 1U) % MSGQ_DEPTH;
+  q->count--;
+
+  crit_exit(p);
+  return 1;
 }
 
 /* ── Delay ────────────────────────────────────────────────────── */

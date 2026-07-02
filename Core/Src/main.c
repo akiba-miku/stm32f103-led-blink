@@ -32,10 +32,13 @@
 #define RCC_APB2ENR_AFIOEN (1UL << 0)
 #define RCC_APB2ENR_IOPAEN (1UL << 2)
 #define RCC_APB2ENR_IOPCEN (1UL << 4)
-#define LED_PIN          13UL
 
-static rtos_sem_t *led_signal;
-static rtos_sem_t *uart_signal;
+#define LED_PIN          13UL
+#define KEY0_MSG         0x10UL
+#define KEY1_MSG         0x20UL
+
+static rtos_msgq_t *led_msgq;
+static rtos_msgq_t *uart_msgq;
 
 static void led_init(void)
 {
@@ -71,17 +74,23 @@ static void button_init(void)
 {
   RCC_APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_AFIOEN;
 
-  GPIOA_CRL &= ~(0xFUL << 0);
-  GPIOA_CRL |= (0x8UL << 0); /* PA0: input pull-up/down. */
-  GPIOA_BSRR = (1UL << 0);   /* Pull-up: button active-low. */
+  GPIOA_CRL &= ~((0xFUL << 0) | (0xFUL << 4));
+  GPIOA_CRL |= (0x8UL << 0) | (0x8UL << 4); /* PA0/PA1 input pull-up/down. */
+  GPIOA_BSRR = (1UL << 0) | (1UL << 1);     /* Pull-up: buttons active-low. */
 
-  AFIO_EXTICR1 &= ~(0xFUL << 0); /* EXTI0 source = PA0. */
-  EXTI_FTSR |= (1UL << 0);
-  EXTI_IMR |= (1UL << 0);
+  AFIO_EXTICR1 &= ~((0xFUL << 0) | (0xFUL << 4)); /* EXTI0/1 source = PA0/1. */
+  EXTI_FTSR |= (1UL << 0) | (1UL << 1);
+  EXTI_IMR |= (1UL << 0) | (1UL << 1);
 
-  NVIC_IPR1 &= ~(0xFFUL << 16);
-  NVIC_IPR1 |= (0x80UL << 16); /* EXTI0 = IRQ6. */
-  NVIC_ISER0 = (1UL << 6);
+  NVIC_IPR1 &= ~((0xFFUL << 16) | (0xFFUL << 24));
+  NVIC_IPR1 |= (0x80UL << 16) | (0x80UL << 24); /* EXTI0/1 priorities. */
+  NVIC_ISER0 = (1UL << 6) | (1UL << 7);
+}
+
+static void post_key_message(uint32_t msg)
+{
+  (void)rtos_msgq_send(led_msgq, msg);
+  (void)rtos_msgq_send(uart_msgq, msg);
 }
 
 void EXTI0_IRQHandler(void)
@@ -96,52 +105,82 @@ void EXTI0_IRQHandler(void)
   }
   last_press_ms = now;
 
-  rtos_sem_signal(led_signal);
-  rtos_sem_signal(uart_signal);
+  post_key_message(KEY0_MSG);
+}
+
+void EXTI1_IRQHandler(void)
+{
+  static uint32_t last_press_ms;
+  const uint32_t now = rtos_tick();
+
+  EXTI_PR = (1UL << 1);
+
+  if ((int32_t)(now - last_press_ms) < 200) {
+    return;
+  }
+  last_press_ms = now;
+
+  post_key_message(KEY1_MSG);
 }
 
 static void led_thread(void *arg)
 {
   uint32_t led_is_on = 0U;
+  uint32_t blink_period_ms = 500U;
+  uint32_t next_toggle_ms = 0U;
 
   (void)arg;
 
   while (1) {
-    led_toggle(&led_is_on);
+    uint32_t msg;
+    const uint32_t now = rtos_tick();
 
-    if (rtos_sem_try_wait(led_signal)) {
-      for (uint32_t i = 0U; i < 6U; i++) {
-        led_toggle(&led_is_on);
-        rtos_delay_ms(80);
+    while (rtos_msgq_try_recv(led_msgq, &msg)) {
+      if (msg == KEY0_MSG) {
+        blink_period_ms = 100U;
+      } else if (msg == KEY1_MSG) {
+        blink_period_ms = 800U;
       }
-      led_off();
-      led_is_on = 0U;
+      next_toggle_ms = now;
     }
 
-    rtos_delay_ms(500);
+    if ((int32_t)(now - next_toggle_ms) >= 0) {
+      led_toggle(&led_is_on);
+      next_toggle_ms = now + blink_period_ms;
+    }
+
+    rtos_delay_ms(20);
   }
 }
 
 static void uart_thread(void *arg)
 {
   char next_char = 'A';
+  uint32_t next_send_ms = 0U;
 
   (void)arg;
 
   while (1) {
-    printf("[UART thread] send char: %c\r\n", next_char);
+    uint32_t msg;
+    const uint32_t now = rtos_tick();
 
-    next_char++;
-    if (next_char > 'Z') {
-      next_char = 'A';
+    while (rtos_msgq_try_recv(uart_msgq, &msg)) {
+      printf("[UART thread] key message code=0x%02lX\r\n",
+             (unsigned long)msg);
     }
 
-    if (rtos_sem_try_wait(uart_signal)) {
-      printf("[UART thread] button signal received at %lu ms\r\n",
-             (unsigned long)rtos_tick());
+    if ((int32_t)(now - next_send_ms) >= 0) {
+      printf("[UART thread] send char: %c\r\n", next_char);
+
+      next_char++;
+      if (next_char > 'Z') {
+        next_char = 'A';
+      }
+
+      next_send_ms = now + 1000U;
     }
 
-    rtos_delay_ms(1000);
+    rtos_delay_ms(20);
   }
 }
 
@@ -149,15 +188,16 @@ int main(void)
 {
   uart1_init();
   led_init();
+
+  led_msgq = rtos_msgq_create();
+  uart_msgq = rtos_msgq_create();
+
   button_init();
 
-  uart1_write_string("\r\nRTOS semaphore sync demo\r\n");
-  uart1_write_string("Thread1: PC13 LED blink, button -> rapid blink\r\n");
-  uart1_write_string("Thread2: USART1 send char, button -> response message\r\n");
-  uart1_write_string("Button: PA0 active-low, UART1: 9600 8N1\r\n\r\n");
-
-  led_signal = rtos_sem_create(0);
-  uart_signal = rtos_sem_create(0);
+  uart1_write_string("\r\nRTOS message queue demo\r\n");
+  uart1_write_string("Thread1: PC13 LED, PA0 -> fast blink, PA1 -> slow blink\r\n");
+  uart1_write_string("Thread2: USART1 send char, PA0 -> 0x10, PA1 -> 0x20\r\n");
+  uart1_write_string("Buttons: PA0/PA1 active-low, UART1: 9600 8N1\r\n\r\n");
 
   rtos_task_create(led_thread, 0, 256);
   rtos_task_create(uart_thread, 0, 256);
