@@ -1,6 +1,7 @@
 #include <stdint.h>
+#include <stdio.h>
 
-#include "elog.h"
+#include "dht11.h"
 #include "uart.h"
 
 #define PERIPH_BASE        0x40000000UL
@@ -37,7 +38,7 @@ static void systick_init(void)
 {
   /* STM32F103 starts from 8 MHz HSI after reset: 8000 cycles = 1 ms. */
   SYST_RVR = 8000UL - 1UL;
-  SYST_CVR = 0;
+  SYST_CVR = 0U;
   SYST_CSR = (1UL << 2) | (1UL << 1) | (1UL << 0);
 }
 
@@ -50,62 +51,58 @@ static void led_init(void)
 {
   RCC_APB2ENR |= RCC_APB2ENR_IOPCEN;
 
-  /* PC13: output push-pull, 2 MHz. CRH bits 23:20 = 0b0010. */
   GPIOC_CRH &= ~(0xFUL << 20);
-  GPIOC_CRH |=  (0x2UL << 20);
+  GPIOC_CRH |= (0x2UL << 20); /* PC13: output push-pull, 2 MHz. */
 
-  GPIOC_BSRR = (1UL << LED_PIN); /* Blue Pill LED is active-low: high = off. */
+  GPIOC_BSRR = (1UL << LED_PIN); /* Blue Pill LED is active-low. */
 }
 
-static void led_on(void)
+static void led_toggle(uint32_t *is_on)
 {
-  GPIOC_BRR = (1UL << LED_PIN);
-}
-
-static void led_off(void)
-{
-  GPIOC_BSRR = (1UL << LED_PIN);
+  if (*is_on != 0U) {
+    GPIOC_BSRR = (1UL << LED_PIN);
+    *is_on = 0U;
+  } else {
+    GPIOC_BRR = (1UL << LED_PIN);
+    *is_on = 1U;
+  }
 }
 
 int main(void)
 {
-  enum { RX_FRAME_LEN = 10 };
+  uint32_t next_read_ms = 1000U;
+  uint32_t next_led_ms = 0U;
+  uint32_t led_is_on = 0U;
 
   systick_init();
-  led_init();
   uart1_init();
-  elog_init();
-  elog_start();
-  elog_set_filter_lvl(ELOG_LVL_DEBUG);
+  led_init();
+  dht11_init();
 
-  elog_d("debug log demo");
-  elog_i("info log demo");
-  elog_e("error log demo");
-
-  uint32_t next_led_ms = 0;
-  uint32_t led_is_on = 0;
-  char rx_frame[RX_FRAME_LEN];
-  uint32_t rx_len = 0;
+  uart1_write_string("\r\nDHT11 temperature/humidity demo\r\n");
+  uart1_write_string("DHT11 DATA: PC15, UART1: 9600 8N1\r\n");
 
   while (1) {
     const uint32_t now = millis();
 
-    if (uart1_take_rx_frame(rx_frame, sizeof(rx_frame), &rx_len)) {
-      for (uint32_t i = 0U; i < rx_len; i++) {
-        uart1_write_char(rx_frame[i]);
+    if ((int32_t)(now - next_read_ms) >= 0) {
+      uint8_t humidity = 0U;
+      uint8_t temperature = 0U;
+      const int status = dht11_read(&humidity, &temperature);
+
+      if (status == DHT11_OK) {
+        printf("Humidity=%u%%RH Temperature=%uC\r\n",
+               (unsigned int)humidity,
+               (unsigned int)temperature);
+      } else {
+        printf("DHT11 read failed, error=%d\r\n", status);
       }
-      uart1_write_string("\r\n");
+
+      next_read_ms = now + 1000U;
     }
 
     if ((int32_t)(now - next_led_ms) >= 0) {
-      if (led_is_on) {
-        led_off();
-        led_is_on = 0;
-      } else {
-        led_on();
-        led_is_on = 1;
-      }
-
+      led_toggle(&led_is_on);
       next_led_ms = now + 500U;
     }
   }
