@@ -3,8 +3,9 @@
 把传统的 **Keil µVision5 实验** 改造成 **Arch Linux 原生嵌入式开发流程**。
 目标功能：板载 LED **亮 500ms → 灭 500ms** 循环（即每 500ms 翻转一次电平）。
 
-当前工程包含 DHT11 温湿度实验：DHT11 DATA 接 PC15，串口 USART1 每 1 秒打印一次
-当前温湿度。详见 [docs/dht11-temperature-humidity.md](docs/dht11-temperature-humidity.md)。
+当前工程包含多线程同步实验：一个线程负责 PC13 点灯，一个线程负责 USART1 发送字符；
+PA0 按键中断通过信号量同步两个线程分别作出响应。详见
+[docs/rtos-button-sync.md](docs/rtos-button-sync.md)。
 
 | 项目 | 值 |
 | --- | --- |
