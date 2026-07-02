@@ -1,32 +1,54 @@
 #include <stdint.h>
+#include <stdio.h>
 
 #include "dht11.h"
-#include "elog.h"
 #include "rtos.h"
 #include "uart.h"
 
 #define PERIPH_BASE      0x40000000UL
+#define APB1PERIPH_BASE  (PERIPH_BASE + 0x00000000UL)
 #define APB2PERIPH_BASE  (PERIPH_BASE + 0x00010000UL)
 #define AHBPERIPH_BASE   (PERIPH_BASE + 0x00020000UL)
 
+#define TIM2_BASE        (APB1PERIPH_BASE + 0x00000000UL)
 #define GPIOC_BASE       (APB2PERIPH_BASE + 0x00001000UL)
 #define RCC_BASE         (AHBPERIPH_BASE + 0x00001000UL)
 
 #define REG32(addr)      (*(volatile uint32_t *)(addr))
 
+#define RCC_APB1ENR      REG32(RCC_BASE + 0x1CUL)
 #define RCC_APB2ENR      REG32(RCC_BASE + 0x18UL)
+
+#define TIM2_CR1         REG32(TIM2_BASE + 0x00UL)
+#define TIM2_DIER        REG32(TIM2_BASE + 0x0CUL)
+#define TIM2_SR          REG32(TIM2_BASE + 0x10UL)
+#define TIM2_EGR         REG32(TIM2_BASE + 0x14UL)
+#define TIM2_PSC         REG32(TIM2_BASE + 0x28UL)
+#define TIM2_ARR         REG32(TIM2_BASE + 0x2CUL)
+
 #define GPIOC_CRH        REG32(GPIOC_BASE + 0x04UL)
 #define GPIOC_BSRR       REG32(GPIOC_BASE + 0x10UL)
 #define GPIOC_BRR        REG32(GPIOC_BASE + 0x14UL)
 
+#define NVIC_ISER0       REG32(0xE000E100UL)
+#define NVIC_IPR7        REG32(0xE000E41CUL)
+
+#define RCC_APB1ENR_TIM2EN (1UL << 0)
 #define RCC_APB2ENR_IOPCEN (1UL << 4)
 
+#define TIM_CR1_CEN      (1UL << 0)
+#define TIM_DIER_UIE     (1UL << 0)
+#define TIM_SR_UIF       (1UL << 0)
+#define TIM_EGR_UG       (1UL << 0)
+
+#define TIM2_IRQN        28UL
 #define LED_PIN          13UL
 #define TEMP_THRESHOLD_C 29U
 
 #define SENSOR_MAIL_SAMPLE 1U
 #define SENSOR_MAIL_ERROR  2U
 
+static rtos_sem_t *sensor_timer_sem;
 static rtos_mailbox_t *uart_mailbox;
 static rtos_mailbox_t *led_mailbox;
 
@@ -60,44 +82,68 @@ static void led_toggle(uint32_t *is_on)
   }
 }
 
+static void tim2_1hz_init(void)
+{
+  RCC_APB1ENR |= RCC_APB1ENR_TIM2EN;
+
+  TIM2_CR1 = 0U;
+  TIM2_PSC = 7999U; /* 8 MHz / (7999 + 1) = 1 kHz. */
+  TIM2_ARR = 999U;  /* 1 kHz / (999 + 1) = 1 Hz. */
+  TIM2_EGR = TIM_EGR_UG;
+  TIM2_SR = 0U;
+  TIM2_DIER = TIM_DIER_UIE;
+
+  NVIC_IPR7 = (NVIC_IPR7 & ~0x000000FFUL) | 0x00000080UL;
+  NVIC_ISER0 = (1UL << TIM2_IRQN);
+
+  TIM2_CR1 = TIM_CR1_CEN;
+}
+
 static void publish_sensor_mail(const rtos_mail_t *mail)
 {
   (void)rtos_mailbox_send(uart_mailbox, mail);
   (void)rtos_mailbox_send(led_mailbox, mail);
 }
 
+void TIM2_IRQHandler(void)
+{
+  if ((TIM2_SR & TIM_SR_UIF) == 0U) {
+    return;
+  }
+
+  TIM2_SR &= ~TIM_SR_UIF;
+
+  if (sensor_timer_sem != 0) {
+    rtos_sem_signal(sensor_timer_sem);
+  }
+}
+
 static void sensor_thread(void *arg)
 {
   (void)arg;
 
-  /* DHT11 needs a short power-up settling time before the first read. */
-  rtos_delay_ms(1000U);
-
   while (1) {
     uint8_t humidity = 0U;
     uint8_t temperature = 0U;
-    const int error = dht11_read(&humidity, &temperature);
+    int error;
     rtos_mail_t mail;
+
+    rtos_sem_wait(sensor_timer_sem);
+    error = dht11_read(&humidity, &temperature);
 
     if (error == DHT11_OK) {
       mail.id = SENSOR_MAIL_SAMPLE;
       mail.value0 = temperature;
       mail.value1 = humidity;
       mail.value2 = rtos_tick();
-      elog_d("sensor thread sample temp=%lu C humidity=%lu %%RH",
-             (unsigned long)mail.value0,
-             (unsigned long)mail.value1);
     } else {
       mail.id = SENSOR_MAIL_ERROR;
       mail.value0 = 0U;
       mail.value1 = 0U;
       mail.value2 = (uint32_t)error;
-      elog_e("sensor thread DHT11 read failed error=%lu",
-             (unsigned long)mail.value2);
     }
 
     publish_sensor_mail(&mail);
-    rtos_delay_ms(1000U);
   }
 }
 
@@ -110,11 +156,11 @@ static void uart_thread(void *arg)
 
     while (rtos_mailbox_try_recv(uart_mailbox, &mail)) {
       if (mail.id == SENSOR_MAIL_SAMPLE) {
-        elog_i("uart thread send temp=%lu C humidity=%lu %%RH",
+        printf("[UART thread] temp=%lu C, humidity=%lu %%RH\r\n",
                (unsigned long)mail.value0,
                (unsigned long)mail.value1);
       } else if (mail.id == SENSOR_MAIL_ERROR) {
-        elog_e("uart thread send DHT11 error=%lu",
+        printf("[UART thread] DHT11 read failed, error=%lu\r\n",
                (unsigned long)mail.value2);
       }
     }
@@ -138,15 +184,8 @@ static void led_thread(void *arg)
     while (rtos_mailbox_try_recv(led_mailbox, &mail)) {
       if (mail.id == SENSOR_MAIL_SAMPLE && mail.value0 > TEMP_THRESHOLD_C) {
         blink_period_ms = 100U;
-        elog_i("led thread fast blink temp=%lu C", (unsigned long)mail.value0);
       } else {
         blink_period_ms = 800U;
-        if (mail.id == SENSOR_MAIL_SAMPLE) {
-          elog_i("led thread slow blink temp=%lu C", (unsigned long)mail.value0);
-        } else {
-          elog_e("led thread slow blink because sensor error=%lu",
-                 (unsigned long)mail.value2);
-        }
       }
       next_toggle_ms = now;
     }
@@ -165,20 +204,22 @@ int main(void)
   uart1_init();
   led_init();
   dht11_init();
-  elog_init();
-  elog_set_filter_lvl(ELOG_LVL_DEBUG);
-  elog_start();
 
+  sensor_timer_sem = rtos_sem_create(0);
   uart_mailbox = rtos_mailbox_create();
   led_mailbox = rtos_mailbox_create();
 
-  elog_i("RTOS EasyLogger mutex demo start");
-  elog_i("DHT11 PC15, UART1 PA9/PA10 9600 8N1");
-  elog_i("temperature > 29 C: fast blink, otherwise slow blink");
+  uart1_write_string("\r\nRTOS timer DHT11 demo\r\n");
+  uart1_write_string("TIM2: trigger DHT11 sampling every 1 second\r\n");
+  uart1_write_string("UART thread: print temperature and humidity via USART1\r\n");
+  uart1_write_string("LED thread: PC13 fast blink when temp > 29 C, otherwise slow blink\r\n");
+  uart1_write_string("DHT11 DATA: PC15, UART1: PA9 TX / PA10 RX, 9600 8N1\r\n\r\n");
 
   rtos_task_create(sensor_thread, 0, 256);
   rtos_task_create(uart_thread, 0, 256);
   rtos_task_create(led_thread, 0, 256);
+
+  tim2_1hz_init();
   rtos_start();
 
   while (1) {

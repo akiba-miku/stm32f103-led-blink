@@ -12,7 +12,6 @@ set(MCU_FLAGS
 add_executable(${PROJECT_NAME}.elf
     Core/Src/main.c
     Core/Src/uart.c
-    Core/Src/elog.c
     Core/Src/dht11.c
     Core/Src/rtos.c
     startup_stm32f103xb.s

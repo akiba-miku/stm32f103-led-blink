@@ -1,7 +1,5 @@
 #include "dht11.h"
 
-#include "elog.h"
-
 /*
  * DHT11 DATA is connected to PC15.
  * The board clock is the STM32F103 reset default: 8 MHz HSI.
@@ -118,7 +116,7 @@ static int wait_data_level(int level, uint32_t timeout_us)
 
 static void print_diag(const char *message)
 {
-  elog_e("DHT11 error: %s", message);
+  (void)message;
 }
 
 void dht11_init(void)
@@ -205,12 +203,7 @@ done:
   }
 
   if (result == DHT11_ERR_CHECKSUM) {
-    elog_e("DHT11 checksum error: %02X %02X %02X %02X %02X",
-           (unsigned int)data[0],
-           (unsigned int)data[1],
-           (unsigned int)data[2],
-           (unsigned int)data[3],
-           (unsigned int)data[4]);
+    return result;
   }
 
   return result;

@@ -1,12 +1,12 @@
-# STM32F103C8T6 EasyLogger 多线程互斥锁实验
+# STM32F103C8T6 RTOS 定时器温湿度实验
 
 把传统的 **Keil µVision5 实验** 改造成 **Arch Linux 原生嵌入式开发流程**。
-目标功能：在上一个 DHT11 邮箱队列实验中加入 EasyLogger 日志系统，并在
-EasyLogger 输出路径中加入互斥锁，保证多个线程同时输出日志时每一行日志完整、不交叉。
+目标功能：TIM2 硬件定时器每 1 秒触发一次 DHT11 温湿度采集，采集线程把温湿度分别
+发送给串口发送线程和 LED 线程；串口线程输出温湿度，LED 线程根据温度切换快慢闪。
 
-当前工程包含 3 个线程：DHT11 采集线程、串口日志线程、LED 控制线程。采集线程仍然
-每秒通过邮箱队列发送温湿度；不同线程都会调用 EasyLogger 输出日志。详见
-[docs/easylogger-mutex-threads.md](docs/easylogger-mutex-threads.md)。
+当前工程包含 3 个线程：DHT11 采集线程、串口发送线程、LED 控制线程。TIM2 中断只负责
+释放采集信号量，DHT11 读取在采集线程中完成。详见
+[docs/rtos-timer-dht11.md](docs/rtos-timer-dht11.md)。
 
 | 项目 | 值 |
 | --- | --- |
@@ -15,7 +15,7 @@ EasyLogger 输出路径中加入互斥锁，保证多个线程同时输出日志
 | LED 引脚 | **PC13**（Blue Pill 板载 LED，**低电平点亮 / active-low**） |
 | DHT11 DATA | **PC15** |
 | 串口 | **USART1：PA9 TX / PA10 RX，9600 8N1** |
-| 日志 | **EasyLogger + RTOS 二值信号量互斥锁** |
+| 定时器 | **TIM2：1 Hz 周期中断触发采集线程** |
 | 调试器 | **ST-LINK V2** |
 | 工程类型 | Arch Linux 原生 **CMake + arm-none-eabi-gcc** 裸机工程 |
 | OpenOCD target | `target/stm32f1x.cfg` |
@@ -44,7 +44,7 @@ EasyLogger 输出路径中加入互斥锁，保证多个线程同时输出日志
   OpenOCD + ST-LINK            （烧录 + 调试，等价于 Keil 的 Download/Debug）
         │  + arm-none-eabi-gdb （命令行/图形调试）
         ▼
-  开发板运行多线程温湿度采集、LED 告警和互斥日志输出
+  开发板运行定时温湿度采集、串口发送和 LED 告警逻辑
   ```
 
 - 课程要求里的 “MDK5” 在 Linux 下由 **arm-none-eabi-gcc 工具链** 替代，
@@ -91,16 +91,15 @@ st-info --probe        # 插上 ST-LINK 后能看到设备
 
 ## 三、当前工程状态
 
-本目录已经包含可直接构建和烧录的 STM32F103C8T6 EasyLogger 多线程互斥锁工程：
+本目录已经包含可直接构建和烧录的 STM32F103C8T6 RTOS 定时器温湿度工程：
 
 ```
 stm32f103-led-blink/
 ├── CMakeLists.txt
 ├── cmake/arm-none-eabi.cmake
-├── Core/Src/main.c                # 三个 RTOS 线程和邮箱队列使用逻辑
+├── Core/Src/main.c                # TIM2 定时器、三个 RTOS 线程和邮箱队列逻辑
 ├── Core/Src/rtos.c                # 简易 RTOS + 邮箱队列
 ├── Core/Src/dht11.c               # DHT11 PC15 驱动
-├── Core/Src/elog.c                # EasyLogger + 互斥锁保护
 ├── Core/Src/uart.c                # USART1 输出
 ├── startup_stm32f103xb.s
 ├── STM32F103C8Tx_FLASH.ld
@@ -109,7 +108,7 @@ stm32f103-led-blink/
 ```
 
 这里采用寄存器裸机方式实现，不依赖 HAL 包下载；`SysTick` 每 1ms 中断一次，
-RTOS 调度 3 个线程：温湿度采集线程、串口日志线程、LED 控制线程。
+TIM2 每 1 秒触发一次采集，RTOS 调度 3 个线程：温湿度采集线程、串口发送线程、LED 控制线程。
 
 如果课程必须提交 STM32CubeMX 截图或 `.ioc` 文件，可再按下面步骤用 CubeMX 生成
 同名 CMake 工程，然后把本工程的 `Core/Src` 与 `Core/Inc` 代码迁入生成工程。
@@ -158,14 +157,13 @@ stm32f103-led-blink/
 
 ## 五、主要代码位置
 
-- `Core/Src/main.c`：创建温湿度采集线程、串口线程、LED 线程。
-- `Core/Src/rtos.c`：实现任务调度、信号量、消息队列和邮箱队列；信号量支持多等待者 FIFO 唤醒。
-- `Core/Src/elog.c`：在 EasyLogger 输出路径中用 RTOS 二值信号量加锁。
+- `Core/Src/main.c`：配置 TIM2 1Hz 定时器，创建温湿度采集线程、串口发送线程、LED 线程。
+- `Core/Src/rtos.c`：实现任务调度、信号量、消息队列和邮箱队列。
 - `Core/Src/dht11.c`：DHT11 驱动，DATA 接 PC15。
 - `Core/Src/uart.c`：USART1 初始化和输出。
 
-本次实验的邮箱队列接口是 `rtos_mailbox_create`、`rtos_mailbox_send`、
-`rtos_mailbox_try_recv`；日志互斥锁在 `elog_printf` 内部自动使用。
+TIM2 中断通过 `rtos_sem_signal` 唤醒采集线程；采集线程再通过
+`rtos_mailbox_send` 把温湿度分别发给串口发送线程和 LED 线程。
 
 ---
 
@@ -238,10 +236,9 @@ VS Code 用 **Cortex-Debug** 扩展可图形化调试（见下）。
 ## 九、验证实验结果
 
 1. 烧录后开发板自动复位运行。
-2. 串口监听 `9600 8N1`，应看到 `[I]`、`[D]`、`[E]` 等 EasyLogger 格式日志。
-3. 温度大于 29 摄氏度时，PC13 LED 快闪；温度小于等于 29 摄氏度时慢闪。
-4. 多个线程连续输出时，每行日志应完整显示，不应出现半行混杂。
-5. 若串口显示 `DHT11 read failed`，优先检查 PC15、3.3V、GND 和 DATA 上拉。
+2. 串口监听 `9600 8N1`，应每 1 秒看到一行温湿度输出。
+3. 温度大于 29 摄氏度时，PC13 LED 快闪；否则慢闪。
+4. 若串口显示 `DHT11 read failed`，优先检查 PC15、3.3V、GND 和 DATA 上拉。
 
 ---
 
