@@ -38,7 +38,8 @@ struct rtos_task {
 
 struct rtos_sem {
   int32_t  count;
-  struct rtos_task *wait_task;   /* only one waiter (FIFO not needed here) */
+  struct rtos_task *wait_head;
+  struct rtos_task *wait_tail;
   struct rtos_sem *next;         /* free list */
 };
 
@@ -210,7 +211,8 @@ rtos_sem_t *rtos_sem_create(int32_t initial)
     rtos_sem_t *s = s_sem_free;
     s_sem_free    = s->next;
     s->count     = initial;
-    s->wait_task = 0;
+    s->wait_head = 0;
+    s->wait_tail = 0;
     s->next      = 0;
     return s;
   }
@@ -219,7 +221,8 @@ rtos_sem_t *rtos_sem_create(int32_t initial)
   if (sem_idx >= MAX_SEMS) return 0;
   rtos_sem_t *s = &s_sems[sem_idx++];
   s->count     = initial;
-  s->wait_task = 0;
+  s->wait_head = 0;
+  s->wait_tail = 0;
   s->next      = 0;
   return s;
 }
@@ -236,10 +239,17 @@ void rtos_sem_wait(rtos_sem_t *s)
     return;
   }
 
-  /* Block current task */
   g_curr_tcb->state      = TASK_BLOCKED_SEM;
   g_curr_tcb->waiting_on = s;
-  s->wait_task           = g_curr_tcb;
+  g_curr_tcb->next       = 0;
+
+  if (s->wait_tail != 0) {
+    s->wait_tail->next = g_curr_tcb;
+    s->wait_tail = g_curr_tcb;
+  } else {
+    s->wait_head = g_curr_tcb;
+    s->wait_tail = g_curr_tcb;
+  }
 
   crit_exit(p);
   trigger_pendsv();
@@ -268,9 +278,13 @@ void rtos_sem_signal(rtos_sem_t *s)
 {
   uint32_t p = crit_enter();
 
-  if (s->wait_task) {
-    rtos_task_t *t = s->wait_task;
-    s->wait_task   = 0;
+  if (s->wait_head) {
+    rtos_task_t *t = s->wait_head;
+    s->wait_head   = t->next;
+    if (s->wait_head == 0) {
+      s->wait_tail = 0;
+    }
+    t->next        = 0;
     t->state       = TASK_READY;
     t->waiting_on  = 0;
     ready_push(t);

@@ -1,8 +1,6 @@
 #include "dht11.h"
 
-#include <stdio.h>
-
-#include "uart.h"
+#include "elog.h"
 
 /*
  * DHT11 DATA is connected to PC15.
@@ -120,9 +118,7 @@ static int wait_data_level(int level, uint32_t timeout_us)
 
 static void print_diag(const char *message)
 {
-  uart1_write_string("DHT11 error: ");
-  uart1_write_string(message);
-  uart1_write_string("\r\n");
+  elog_e("DHT11 error: %s", message);
 }
 
 void dht11_init(void)
@@ -209,16 +205,12 @@ done:
   }
 
   if (result == DHT11_ERR_CHECKSUM) {
-    char buf[96];
-
-    snprintf(buf, sizeof(buf),
-             "DHT11 checksum error: %02X %02X %02X %02X %02X\r\n",
-             (unsigned int)data[0],
-             (unsigned int)data[1],
-             (unsigned int)data[2],
-             (unsigned int)data[3],
-             (unsigned int)data[4]);
-    uart1_write_string(buf);
+    elog_e("DHT11 checksum error: %02X %02X %02X %02X %02X",
+           (unsigned int)data[0],
+           (unsigned int)data[1],
+           (unsigned int)data[2],
+           (unsigned int)data[3],
+           (unsigned int)data[4]);
   }
 
   return result;

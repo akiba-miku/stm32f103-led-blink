@@ -37,14 +37,13 @@ void rtos_delay_ms(uint32_t ms);
  */
 rtos_sem_t *rtos_sem_create(int32_t initial);
 
-/* Decrement the semaphore.  Blocks the calling task if count == 0. */
+/* Decrement the semaphore. Blocks the calling task if count == 0. */
 void rtos_sem_wait(rtos_sem_t *s);
 
 /* Try to decrement the semaphore. Returns 1 on success, 0 if count == 0. */
 int rtos_sem_try_wait(rtos_sem_t *s);
 
-/* Increment the semaphore.  Wakes one waiter if any.
- * Safe to call from ISR. */
+/* Increment the semaphore. Wakes one waiter if any. Safe to call from ISR. */
 void rtos_sem_signal(rtos_sem_t *s);
 
 /* ── Message Queue API ───────────────────────────────────────── */

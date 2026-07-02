@@ -1,7 +1,7 @@
 #include <stdint.h>
-#include <stdio.h>
 
 #include "dht11.h"
+#include "elog.h"
 #include "rtos.h"
 #include "uart.h"
 
@@ -84,11 +84,16 @@ static void sensor_thread(void *arg)
       mail.value0 = temperature;
       mail.value1 = humidity;
       mail.value2 = rtos_tick();
+      elog_d("sensor thread sample temp=%lu C humidity=%lu %%RH",
+             (unsigned long)mail.value0,
+             (unsigned long)mail.value1);
     } else {
       mail.id = SENSOR_MAIL_ERROR;
       mail.value0 = 0U;
       mail.value1 = 0U;
       mail.value2 = (uint32_t)error;
+      elog_e("sensor thread DHT11 read failed error=%lu",
+             (unsigned long)mail.value2);
     }
 
     publish_sensor_mail(&mail);
@@ -105,11 +110,11 @@ static void uart_thread(void *arg)
 
     while (rtos_mailbox_try_recv(uart_mailbox, &mail)) {
       if (mail.id == SENSOR_MAIL_SAMPLE) {
-        printf("[UART] temp=%lu C, humidity=%lu %%RH\r\n",
+        elog_i("uart thread send temp=%lu C humidity=%lu %%RH",
                (unsigned long)mail.value0,
                (unsigned long)mail.value1);
       } else if (mail.id == SENSOR_MAIL_ERROR) {
-        printf("[UART] DHT11 read failed, error=%lu\r\n",
+        elog_e("uart thread send DHT11 error=%lu",
                (unsigned long)mail.value2);
       }
     }
@@ -133,8 +138,15 @@ static void led_thread(void *arg)
     while (rtos_mailbox_try_recv(led_mailbox, &mail)) {
       if (mail.id == SENSOR_MAIL_SAMPLE && mail.value0 > TEMP_THRESHOLD_C) {
         blink_period_ms = 100U;
+        elog_i("led thread fast blink temp=%lu C", (unsigned long)mail.value0);
       } else {
         blink_period_ms = 800U;
+        if (mail.id == SENSOR_MAIL_SAMPLE) {
+          elog_i("led thread slow blink temp=%lu C", (unsigned long)mail.value0);
+        } else {
+          elog_e("led thread slow blink because sensor error=%lu",
+                 (unsigned long)mail.value2);
+        }
       }
       next_toggle_ms = now;
     }
@@ -153,15 +165,16 @@ int main(void)
   uart1_init();
   led_init();
   dht11_init();
+  elog_init();
+  elog_set_filter_lvl(ELOG_LVL_DEBUG);
+  elog_start();
 
   uart_mailbox = rtos_mailbox_create();
   led_mailbox = rtos_mailbox_create();
 
-  uart1_write_string("\r\nRTOS mailbox DHT11 demo\r\n");
-  uart1_write_string("Sensor thread: read DHT11 on PC15 every 1 second\r\n");
-  uart1_write_string("UART thread: print temperature and humidity via USART1\r\n");
-  uart1_write_string("LED thread: PC13 fast blink when temp > 29 C, otherwise slow blink\r\n");
-  uart1_write_string("UART1: PA9 TX, PA10 RX, 9600 8N1\r\n\r\n");
+  elog_i("RTOS EasyLogger mutex demo start");
+  elog_i("DHT11 PC15, UART1 PA9/PA10 9600 8N1");
+  elog_i("temperature > 29 C: fast blink, otherwise slow blink");
 
   rtos_task_create(sensor_thread, 0, 256);
   rtos_task_create(uart_thread, 0, 256);
