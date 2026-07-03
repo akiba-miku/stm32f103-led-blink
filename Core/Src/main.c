@@ -50,6 +50,7 @@ typedef struct {
 
 static sensor_view_t local_view;
 static sensor_view_t remote_view;
+static char last_command = '-';
 static app_config_t config = {
 #if NODE_ROLE == ROLE_GATEWAY
   ROLE_GATEWAY,
@@ -153,7 +154,8 @@ static void print_main_page(uint32_t runtime_s)
          (unsigned long)config.sample_interval_ms,
          (unsigned long)runtime_s);
   printf("+-------------------------------------------------------------+\r\n");
-  printf("Keys: c=config page, r=toggle role, +/-=interval, b=baud\r\n");
+  printf("Keys: c=config, r=role, +/-=interval, b=baud  Last key: %c\r\n",
+         last_command);
 }
 
 static void print_config_page(void)
@@ -181,7 +183,7 @@ static void print_config_page(void)
   printf("| m : return to main page                                     |\r\n");
   printf("| c : stay on configuration page                              |\r\n");
   printf("+-------------------------------------------------------------+\r\n");
-  printf("Changes take effect immediately. Reconfigure LoRa module if baud changes.\r\n");
+  printf("Last key: %c. Changes take effect immediately.\r\n", last_command);
 }
 
 static void print_current_page(uint32_t runtime_s)
@@ -212,10 +214,10 @@ static void cycle_lora_baud(void)
   lora_set_baud(config.lora_baud);
 }
 
-static void handle_command(char ch)
+static int handle_command(char ch)
 {
   if (ch == '\r' || ch == '\n') {
-    return;
+    return 0;
   }
 
   if (ch >= 'A' && ch <= 'Z') {
@@ -239,16 +241,26 @@ static void handle_command(char ch)
     }
   } else if (ch == 'b') {
     cycle_lora_baud();
+  } else {
+    return 0;
   }
+
+  last_command = ch;
+  return 1;
 }
 
-static void poll_commands(void)
+static int poll_commands(void)
 {
   char ch;
+  int changed = 0;
 
   while (uart1_read_char(&ch)) {
-    handle_command(ch);
+    if (handle_command(ch)) {
+      changed = 1;
+    }
   }
+
+  return changed;
 }
 
 static void update_local_sample(uint32_t sequence)
@@ -268,9 +280,10 @@ static void update_local_sample(uint32_t sequence)
                    error);
 }
 
-static void poll_remote_samples(void)
+static int poll_remote_samples(void)
 {
   lora_sample_t sample;
+  int changed = 0;
 
   while (lora_poll_sample(&sample)) {
     if (sample.role == (uint8_t)local_role_char()) {
@@ -283,37 +296,43 @@ static void poll_remote_samples(void)
     remote_view.error = sample.error;
     remote_view.sequence = sample.sequence;
     remote_view.updated_ms = rtos_tick();
+    changed = 1;
   }
+
+  return changed;
 }
 
 static void app_task(void *arg)
 {
   uint8_t led_state = 0U;
   uint32_t sequence = 0U;
-  uint32_t runtime_s = 0U;
   uint32_t next_sample_ms = 0U;
-  uint32_t next_print_ms = 0U;
+  int screen_dirty = 1;
 
   (void)arg;
 
   while (1) {
     const uint32_t now = rtos_tick();
 
-    poll_commands();
-    poll_remote_samples();
+    if (poll_commands()) {
+      screen_dirty = 1;
+    }
+    if (poll_remote_samples()) {
+      screen_dirty = 1;
+    }
 
     if ((int32_t)(now - next_sample_ms) >= 0) {
       update_local_sample(sequence);
       sequence++;
       next_sample_ms = now + config.sample_interval_ms;
-      runtime_s++;
       led_state ^= 1U;
       led_set(led_state);
+      screen_dirty = 1;
     }
 
-    if ((int32_t)(now - next_print_ms) >= 0) {
-      print_current_page(runtime_s);
-      next_print_ms = now + 500U;
+    if (screen_dirty) {
+      print_current_page(now / 1000U);
+      screen_dirty = 0;
     }
 
     rtos_delay_ms(20U);
