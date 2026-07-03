@@ -1,40 +1,77 @@
-# STM32F103C8T6 第五天：串口终端无线接入系统界面
+# STM32F103C8T6 第六天：LoRa 温湿度终端与网关
 
-本工程用于完成第五天温湿度显示实验的替代演示版本：
+本工程用于完成第六天 LoRa 收发实验：
 
-- 设计“Wireless Access System”主界面
-- STM32 每 1 秒采集一次 DHT11 温湿度
-- 通过 USART1 将主界面和温湿度刷新到串口终端
-- PC13 LED 每秒翻转一次，表示程序正在运行
+- 完成 LoRa 终端程序
+- 完成 LoRa 网关程序
+- 本机每 1 秒采集一次 DHT11 温湿度
+- 通过 LoRa 透明串口模块互相发送温湿度数据
+- 在串口主页面同时显示本终端温湿度和远端设备温湿度
 
-说明：当前没有实际大彩串口屏/液晶屏硬件，因此本版本不再发送大彩屏二进制绘图指令，
-而是在 `picocom` 终端中显示可拍摄的文字界面。这样可以避免乱码，并能直接录制实验现象。
+工程一次构建会生成两个固件：
+
+```text
+build/stm32f103-led-blink-terminal.elf
+build/stm32f103-led-blink-gateway.elf
+```
 
 ## 硬件连接
 
-| 模块 | STM32F103C8T6 引脚 | 说明 |
-| --- | --- | --- |
-| DHT11 DATA | PC15 | 当前工程使用 PC15 |
-| 串口 TX | PA9 / USART1_TX | 输出终端界面 |
-| 串口 RX | PA10 / USART1_RX | 当前演示不依赖输入 |
-| GND | GND | 串口模块、DHT11、开发板共地 |
-| Blue Pill LED | PC13 | 低电平点亮，每秒翻转一次 |
+### 调试串口
 
-串口参数：
+| 功能 | STM32 引脚 | 说明 |
+| --- | --- | --- |
+| USART1_TX | PA9 | 输出主页面到 `picocom` |
+| USART1_RX | PA10 | 当前实验不依赖输入 |
+| GND | GND | 与 DAPLink/USB 转串口共地 |
+
+参数：
 
 ```text
 USART1: 115200 8N1
 ```
 
-## 文件说明
+### LoRa 透明串口模块
+
+| LoRa 模块 | STM32 引脚 | 说明 |
+| --- | --- | --- |
+| TXD | PA3 / USART2_RX | LoRa 发给 STM32 |
+| RXD | PA2 / USART2_TX | STM32 发给 LoRa |
+| GND | GND | 必须共地 |
+| VCC | 按模块要求 | 常见为 3.3V 或 5V，按模块丝印/手册 |
+
+参数：
 
 ```text
-Core/Src/main.c       主程序，1 秒采集 DHT11 并打印终端界面
-Core/Src/dht11.c      DHT11 驱动，DATA=PC15
-Core/Src/uart.c       USART1，115200 8N1
-Core/Src/rtos.c       简易 RTOS，提供 1ms tick 和任务延时
-docs/day5-serial-ui-dht11.md  实验说明
+USART2: 9600 8N1
 ```
+
+代码按“透明串口 LoRa 模块”设计，例如 E32/E22/AS 系列透明传输模式。两个模块需要提前配成同一频点、同一空速、同一串口波特率。
+
+### DHT11
+
+| DHT11 | STM32 |
+| --- | --- |
+| DATA | PC15 |
+| VCC | 3.3V 或 5V，按模块要求 |
+| GND | GND |
+
+## LoRa 数据帧
+
+两个节点每秒发送一行 ASCII 帧：
+
+```text
+LH,<role>,<seq>,<temp>,<hum>,<error>\n
+```
+
+示例：
+
+```text
+LH,T,12,28,55,0
+LH,G,12,29,58,0
+```
+
+`role` 为 `T` 表示终端，`G` 表示网关。
 
 ## 编译
 
@@ -51,53 +88,58 @@ cmake --build build
 
 ## 烧录
 
-接好 DAPLink/CMSIS-DAP 后运行：
+烧终端节点：
 
 ```bash
-./flash.sh
+./flash.sh terminal
 ```
+
+烧网关节点：
+
+```bash
+./flash.sh gateway
+```
+
+如果只有一块板，也可以先烧 `terminal` 拍本机界面，再烧 `gateway` 拍网关界面；有两块板和两套 LoRa 模块时，两个页面会显示对方的远端温湿度。
 
 ## 查看结果
 
-退出旧的 `picocom`：
+```bash
+picocom -b 115200 /dev/ttyACM0
+```
+
+退出 `picocom`：
 
 ```text
 Ctrl-A
 Ctrl-X
 ```
 
-重新打开串口：
-
-```bash
-picocom -b 115200 /dev/ttyACM0
-```
-
-终端会每秒刷新一次，显示类似：
+主页面示例：
 
 ```text
-+--------------------------------------------------+
-|              Wireless Access System              |
-+--------------------------------------------------+
-| Device : STM32F103C8T6 Blue Pill                 |
-| Sensor : DHT11 on PC15                           |
-| UART   : USART1 115200 8N1                       |
-+--------------------------------------------------+
-| Temperature :  28 C                              |
-| Humidity    :  55 %RH                            |
-| Status      : OK                                 |
-+--------------------------------------------------+
-| Refresh     : 1 second                           |
-| Runtime     : 12 s                               |
-+--------------------------------------------------+
++-------------------------------------------------------------+
+|                  LoRa Temperature Gateway                   |
++-------------------------------------------------------------+
+| Node role : Terminal                                        |
+| Debug UART: USART1 PA9/PA10 115200 8N1                     |
+| LoRa UART : USART2 PA2/PA3   9600 8N1 transparent mode      |
+| DHT11     : PC15                                            |
++----------+---------+----------+-----------------------------+
+| Source   | Temp    | Humidity | Status                      |
++----------+---------+----------+-----------------------------+
+| Local    |    28 C |     55 %RH | seq=12   age=0  s         |
+| Remote   |    29 C |     58 %RH | seq=12   age=1  s         |
++----------+---------+----------+-----------------------------+
 ```
-
-如果 DHT11 未响应，状态行会显示 `DHT11 read failed, error=<n>`。
 
 ## 拍视频
 
-视频里建议同时拍到：
+视频里建议拍到：
 
-- `picocom` 终端每秒刷新界面
-- 开发板和 DHT11 实物
-- PC13 LED 每秒变化
+- 终端或网关串口主页面
+- Local 和 Remote 两行温湿度
+- STM32、DHT11、LoRa 模块实物
 - 视频上标注自己的班级、姓名、学号
+
+如果没有收到远端 LoRa 数据，Remote 行会显示 `waiting`。

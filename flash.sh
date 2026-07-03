@@ -13,10 +13,22 @@ if ! command -v openocd >/dev/null 2>&1; then
   exit 1
 fi
 
-# 自动找 build/ 下的 ELF，避免硬编码工程名。
-ELF="$(ls build/*.elf 2>/dev/null | head -n1 || true)"
+ROLE="${1:-terminal}"
+case "${ROLE}" in
+  terminal)
+    ELF="$(ls build/*terminal*.elf 2>/dev/null | head -n1 || true)"
+    ;;
+  gateway)
+    ELF="$(ls build/*gateway*.elf 2>/dev/null | head -n1 || true)"
+    ;;
+  *)
+    echo "错误：未知目标 ${ROLE}。用法：./flash.sh [terminal|gateway]" >&2
+    exit 1
+    ;;
+esac
+
 if [[ -z "${ELF}" ]]; then
-  echo "错误：build/ 下没有 .elf。请先运行 ./build.sh 编译。" >&2
+  echo "错误：build/ 下没有 ${ROLE} 固件。请先运行 ./build.sh 编译。" >&2
   exit 1
 fi
 echo "烧录: ${ELF}"
@@ -32,4 +44,4 @@ OPENOCD_TARGET="target/stm32f1x.cfg"
 openocd -f "${OPENOCD_INTERFACE}" -f "${OPENOCD_TARGET}" \
         -c "program ${ELF} verify reset exit"
 
-echo "烧录完成。开发板应已复位运行，串口终端应每秒刷新一次无线接入系统界面。"
+echo "烧录完成。开发板应已复位运行，串口终端应显示 LoRa ${ROLE} 主页面。"
