@@ -38,6 +38,17 @@
 static char rx_line[LORA_LINE_MAX];
 static uint32_t rx_line_len;
 
+static uint32_t lora_brr_from_baud(uint32_t baud)
+{
+  if (baud == 115200U) {
+    return 0x0045UL;
+  }
+  if (baud == 19200U) {
+    return 0x01A1UL;
+  }
+  return 0x0341UL;
+}
+
 static void lora_write_char(char ch)
 {
   while ((USART2_SR & USART_SR_TXE) == 0U) {
@@ -172,8 +183,13 @@ void lora_init(void)
   GPIOA_CRL |= (0xBUL << 8) | (0x4UL << 12);
 
   /* LoRa transparent UART modules commonly default to 9600 8N1. */
-  USART2_BRR = 0x0341UL;
+  USART2_BRR = lora_brr_from_baud(9600U);
   USART2_CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
+}
+
+void lora_set_baud(uint32_t baud)
+{
+  USART2_BRR = lora_brr_from_baud(baud);
 }
 
 void lora_send_sample(uint8_t role, uint32_t sequence, uint8_t temperature,

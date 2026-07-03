@@ -3,6 +3,7 @@
 ## 实验目标
 
 完成 LoRa 收发数据终端和网关程序，使主页面能同时显示本终端温湿度和远端设备温湿度。
+另外实现系统配置页面，可切换终端/网关角色并修改参数。
 
 ## 程序结构
 
@@ -13,7 +14,8 @@ stm32f103-led-blink-terminal.elf
 stm32f103-led-blink-gateway.elf
 ```
 
-CMake 通过 `NODE_ROLE=TERMINAL` 和 `NODE_ROLE=GATEWAY` 区分两个程序。主要代码：
+CMake 通过 `NODE_ROLE=ROLE_TERMINAL` 和 `NODE_ROLE=ROLE_GATEWAY` 区分两个程序的默认角色。
+运行后仍可通过配置页面切换角色。主要代码：
 
 ```text
 Core/Src/main.c       页面显示、DHT11 采集、LoRa 收发调度
@@ -104,3 +106,26 @@ picocom -b 115200 /dev/ttyACM0
 - seq 和 age：远端数据序号与更新时间
 
 如果没有收到远端数据，Remote 显示 `waiting`。
+
+## 系统配置页面
+
+在串口终端中直接按键：
+
+```text
+c  进入配置页
+m  返回主页面
+r  切换 Terminal/Gateway 角色
++  采样周期增加 1 秒
+-  采样周期减少 1 秒
+b  切换 LoRa 串口波特率
+```
+
+可修改参数：
+
+| 参数 | 取值 |
+| --- | --- |
+| 节点角色 | Terminal / Gateway |
+| 采样周期 | 1000-10000 ms |
+| LoRa 串口波特率 | 9600 / 19200 / 115200 |
+
+配置立即生效。修改 LoRa 串口波特率时，外部 LoRa 模块也需要保持同样波特率，否则无法收发。

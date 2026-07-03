@@ -23,23 +23,13 @@
 #define RCC_APB2ENR_IOPCEN (1UL << 4)
 #define LED_PIN          13UL
 
-#define ROLE_TERMINAL    1
-#define ROLE_GATEWAY     2
+#define ROLE_TERMINAL    1U
+#define ROLE_GATEWAY     2U
+#define PAGE_MAIN        0U
+#define PAGE_CONFIG      1U
 
 #ifndef NODE_ROLE
-#define NODE_ROLE TERMINAL
-#endif
-
-#if NODE_ROLE == ROLE_TERMINAL
-#define LOCAL_ROLE_CHAR  'T'
-#define LOCAL_ROLE_NAME  "Terminal"
-#define REMOTE_ROLE_NAME "Gateway"
-#elif NODE_ROLE == ROLE_GATEWAY
-#define LOCAL_ROLE_CHAR  'G'
-#define LOCAL_ROLE_NAME  "Gateway"
-#define REMOTE_ROLE_NAME "Terminal"
-#else
-#error "NODE_ROLE must be TERMINAL or GATEWAY"
+#define NODE_ROLE ROLE_TERMINAL
 #endif
 
 typedef struct {
@@ -51,8 +41,27 @@ typedef struct {
   uint32_t updated_ms;
 } sensor_view_t;
 
+typedef struct {
+  uint8_t role;
+  uint8_t page;
+  uint32_t sample_interval_ms;
+  uint32_t lora_baud;
+} app_config_t;
+
 static sensor_view_t local_view;
 static sensor_view_t remote_view;
+static app_config_t config = {
+#if NODE_ROLE == ROLE_GATEWAY
+  ROLE_GATEWAY,
+#else
+  ROLE_TERMINAL,
+#endif
+  PAGE_MAIN,
+  1000U,
+  9600U
+};
+
+static const uint32_t lora_bauds[] = {9600U, 19200U, 115200U};
 
 static void led_gpio_init(void)
 {
@@ -70,6 +79,21 @@ static void led_set(uint8_t on)
   } else {
     GPIOC_BSRR = (1UL << LED_PIN);
   }
+}
+
+static char local_role_char(void)
+{
+  return (config.role == ROLE_GATEWAY) ? 'G' : 'T';
+}
+
+static const char *local_role_name(void)
+{
+  return (config.role == ROLE_GATEWAY) ? "Gateway" : "Terminal";
+}
+
+static const char *remote_role_name(void)
+{
+  return (config.role == ROLE_GATEWAY) ? "Terminal" : "Gateway";
 }
 
 static uint32_t age_seconds(const sensor_view_t *view, uint32_t now)
@@ -103,18 +127,19 @@ static void print_sample_row(const char *label, const sensor_view_t *view,
   }
 }
 
-static void print_terminal_ui(uint32_t runtime_s)
+static void print_main_page(uint32_t runtime_s)
 {
   const uint32_t now = rtos_tick();
 
   printf("\033[2J\033[H");
   printf("+-------------------------------------------------------------+\r\n");
-  printf("|                  LoRa Temperature Gateway                   |\r\n");
+  printf("|                  LoRa Temperature System                    |\r\n");
   printf("+-------------------------------------------------------------+\r\n");
   printf("| Node role : %-8s                                      |\r\n",
-         LOCAL_ROLE_NAME);
+         local_role_name());
   printf("| Debug UART: USART1 PA9/PA10 115200 8N1                     |\r\n");
-  printf("| LoRa UART : USART2 PA2/PA3   9600 8N1 transparent mode      |\r\n");
+  printf("| LoRa UART : USART2 PA2/PA3   %-6lu 8N1 transparent mode    |\r\n",
+         (unsigned long)config.lora_baud);
   printf("| DHT11     : PC15                                            |\r\n");
   printf("+----------+---------+----------+-----------------------------+\r\n");
   printf("| Source   | Temp    | Humidity | Status                      |\r\n");
@@ -122,12 +147,108 @@ static void print_terminal_ui(uint32_t runtime_s)
   print_sample_row("Local", &local_view, now);
   print_sample_row("Remote", &remote_view, now);
   printf("+----------+---------+----------+-----------------------------+\r\n");
-  printf("| Local program : %-8s  Remote expected : %-8s           |\r\n",
-         LOCAL_ROLE_NAME, REMOTE_ROLE_NAME);
-  printf("| Runtime       : %-8lu s                                  |\r\n",
+  printf("| Local role : %-8s  Remote expected : %-8s             |\r\n",
+         local_role_name(), remote_role_name());
+  printf("| Interval   : %-4lu ms   Runtime : %-8lu s              |\r\n",
+         (unsigned long)config.sample_interval_ms,
          (unsigned long)runtime_s);
   printf("+-------------------------------------------------------------+\r\n");
-  printf("Video: show both boards/LoRa modules or show one node receiving remote data.\r\n");
+  printf("Keys: c=config page, r=toggle role, +/-=interval, b=baud\r\n");
+}
+
+static void print_config_page(void)
+{
+  printf("\033[2J\033[H");
+  printf("+-------------------------------------------------------------+\r\n");
+  printf("|                     System Configuration                    |\r\n");
+  printf("+-------------------------------------------------------------+\r\n");
+  printf("| Current role         : %-8s                            |\r\n",
+         local_role_name());
+  printf("| Remote expected      : %-8s                            |\r\n",
+         remote_role_name());
+  printf("| Sample interval      : %-4lu ms                           |\r\n",
+         (unsigned long)config.sample_interval_ms);
+  printf("| LoRa UART baud       : %-6lu 8N1                          |\r\n",
+         (unsigned long)config.lora_baud);
+  printf("| DHT11 data pin       : PC15                                |\r\n");
+  printf("| LoRa pins            : PA2 TX / PA3 RX                     |\r\n");
+  printf("+-------------------------------------------------------------+\r\n");
+  printf("| Commands                                                    |\r\n");
+  printf("| r : switch Terminal/Gateway role                            |\r\n");
+  printf("| + : increase sample interval                                |\r\n");
+  printf("| - : decrease sample interval                                |\r\n");
+  printf("| b : cycle LoRa baud 9600/19200/115200                       |\r\n");
+  printf("| m : return to main page                                     |\r\n");
+  printf("| c : stay on configuration page                              |\r\n");
+  printf("+-------------------------------------------------------------+\r\n");
+  printf("Changes take effect immediately. Reconfigure LoRa module if baud changes.\r\n");
+}
+
+static void print_current_page(uint32_t runtime_s)
+{
+  if (config.page == PAGE_CONFIG) {
+    print_config_page();
+  } else {
+    print_main_page(runtime_s);
+  }
+}
+
+static void cycle_lora_baud(void)
+{
+  uint32_t i;
+
+  for (i = 0U; i < (sizeof(lora_bauds) / sizeof(lora_bauds[0])); i++) {
+    if (lora_bauds[i] == config.lora_baud) {
+      break;
+    }
+  }
+
+  i++;
+  if (i >= (sizeof(lora_bauds) / sizeof(lora_bauds[0]))) {
+    i = 0U;
+  }
+
+  config.lora_baud = lora_bauds[i];
+  lora_set_baud(config.lora_baud);
+}
+
+static void handle_command(char ch)
+{
+  if (ch == '\r' || ch == '\n') {
+    return;
+  }
+
+  if (ch >= 'A' && ch <= 'Z') {
+    ch = (char)(ch - 'A' + 'a');
+  }
+
+  if (ch == 'c') {
+    config.page = PAGE_CONFIG;
+  } else if (ch == 'm') {
+    config.page = PAGE_MAIN;
+  } else if (ch == 'r') {
+    config.role = (config.role == ROLE_GATEWAY) ? ROLE_TERMINAL : ROLE_GATEWAY;
+    remote_view.valid = 0U;
+  } else if (ch == '+') {
+    if (config.sample_interval_ms < 10000U) {
+      config.sample_interval_ms += 1000U;
+    }
+  } else if (ch == '-') {
+    if (config.sample_interval_ms > 1000U) {
+      config.sample_interval_ms -= 1000U;
+    }
+  } else if (ch == 'b') {
+    cycle_lora_baud();
+  }
+}
+
+static void poll_commands(void)
+{
+  char ch;
+
+  while (uart1_read_char(&ch)) {
+    handle_command(ch);
+  }
 }
 
 static void update_local_sample(uint32_t sequence)
@@ -143,7 +264,7 @@ static void update_local_sample(uint32_t sequence)
   local_view.sequence = sequence;
   local_view.updated_ms = rtos_tick();
 
-  lora_send_sample((uint8_t)LOCAL_ROLE_CHAR, sequence, temperature, humidity,
+  lora_send_sample((uint8_t)local_role_char(), sequence, temperature, humidity,
                    error);
 }
 
@@ -152,7 +273,7 @@ static void poll_remote_samples(void)
   lora_sample_t sample;
 
   while (lora_poll_sample(&sample)) {
-    if (sample.role == (uint8_t)LOCAL_ROLE_CHAR) {
+    if (sample.role == (uint8_t)local_role_char()) {
       continue;
     }
 
@@ -178,19 +299,20 @@ static void app_task(void *arg)
   while (1) {
     const uint32_t now = rtos_tick();
 
+    poll_commands();
     poll_remote_samples();
 
     if ((int32_t)(now - next_sample_ms) >= 0) {
       update_local_sample(sequence);
       sequence++;
-      next_sample_ms = now + 1000U;
+      next_sample_ms = now + config.sample_interval_ms;
       runtime_s++;
       led_state ^= 1U;
       led_set(led_state);
     }
 
     if ((int32_t)(now - next_print_ms) >= 0) {
-      print_terminal_ui(runtime_s);
+      print_current_page(runtime_s);
       next_print_ms = now + 500U;
     }
 
