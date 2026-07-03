@@ -67,6 +67,15 @@ static volatile uint8_t rx_frame[UART1_RX_FRAME_LEN];
 static volatile uint32_t rx_frame_len;
 static volatile uint32_t rx_frame_ready;
 
+static uint32_t uart1_brr_from_baud(uint32_t baud)
+{
+  if (baud == 9600U) {
+    return 0x0341UL;
+  }
+
+  return 0x0045UL; /* 115200 baud at 8 MHz PCLK2. */
+}
+
 static void uart1_enter_critical(void)
 {
   __asm volatile("cpsid i" ::: "memory");
@@ -127,8 +136,7 @@ void uart1_init(void)
   GPIOA_CRH &= ~((0xFUL << 4) | (0xFUL << 8));
   GPIOA_CRH |= (0xBUL << 4) | (0x4UL << 8);
 
-  /* PCLK2 defaults to 8 MHz from HSI. 8 MHz / 9600 = BRR 0x0341. */
-  USART1_BRR = 0x0341UL;
+  USART1_BRR = uart1_brr_from_baud(115200U);
   USART1_CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_IDLEIE;
 
   DMA1_CH5_CCR &= ~DMA_CCR_EN;
@@ -142,12 +150,31 @@ void uart1_init(void)
   uart1_rearm_dma_rx();
 }
 
+void uart1_set_baud(uint32_t baud)
+{
+  USART1_BRR = uart1_brr_from_baud(baud);
+}
+
 void uart1_write_char(char ch)
+{
+  uart1_write_byte((uint8_t)ch);
+}
+
+void uart1_write_byte(uint8_t byte)
 {
   while ((USART1_SR & USART_SR_TXE) == 0U) {
   }
 
-  USART1_DR = (uint32_t)(uint8_t)ch;
+  USART1_DR = (uint32_t)byte;
+}
+
+void uart1_write_bytes(const uint8_t *data, uint32_t len)
+{
+  while (len > 0U) {
+    uart1_write_byte(*data);
+    data++;
+    len--;
+  }
 }
 
 void uart1_write_string(const char *text)

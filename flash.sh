@@ -32,4 +32,4 @@ OPENOCD_TARGET="target/stm32f1x.cfg"
 openocd -f "${OPENOCD_INTERFACE}" -f "${OPENOCD_TARGET}" \
         -c "program ${ELF} verify reset exit"
 
-echo "烧录完成。开发板应已复位运行，观察 PC13 LED 是否 500ms 闪烁。"
+echo "烧录完成。开发板应已复位运行，串口终端应每秒刷新一次无线接入系统界面。"
